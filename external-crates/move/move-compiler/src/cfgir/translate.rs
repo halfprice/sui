@@ -6,7 +6,7 @@ use crate::{
     cfgir::{
         self,
         ast::{self as G, BasicBlock, BasicBlocks, BlockInfo},
-        cfg::{ImmForwardCFG, MutForwardCFG, build_dead_code_error},
+        cfg::{build_dead_code_error, ImmForwardCFG, MutForwardCFG},
     },
     diag,
     diagnostics::Diagnostics,
@@ -471,11 +471,13 @@ type BlockList = Vec<(Label, BasicBlock)>;
 
 fn block(context: &mut Context, stmts: H::Block) -> BlockList {
     let (start_block, blocks) = block_(context, stmts);
-    vec![(context.new_label(), start_block)].into_iter().chain(blocks).collect()
+    vec![(context.new_label(), start_block)]
+        .into_iter()
+        .chain(blocks)
+        .collect()
 }
 
 fn block_(context: &mut Context, stmts: H::Block) -> (BasicBlock, BlockList) {
-
     let mut current_block: BasicBlock = VecDeque::new();
     let mut blocks = Vec::new();
 
@@ -511,14 +513,6 @@ fn finalize_blocks(
         label_map.insert(*lbl, next_label());
     }
 
-    // println!("DEBUG:\n  {:?}", label_map);
-    // for (lbl, block) in &blocks {
-    //     println!("{:?}:", lbl);
-    //     for cmd in block {
-    //         println!("    {:?}", cmd);
-    //     }
-    // }
-
     let mut block_info: Vec<(Label, BlockInfo)> = vec![];
     for (lbl, _) in blocks.iter() {
         let info = match context.loop_bounds.get(&lbl) {
@@ -528,12 +522,17 @@ fn finalize_blocks(
                 loop_end,
             }) => {
                 let loop_end = match loop_end {
-                    G::LoopEnd::Target(end) if label_map.contains_key(&end) => G::LoopEnd::Target(label_map[&end]),
+                    G::LoopEnd::Target(end) if label_map.contains_key(&end) => {
+                        G::LoopEnd::Target(label_map[&end])
+                    }
                     G::LoopEnd::Target(_) => G::LoopEnd::Unused,
                     G::LoopEnd::Unused => G::LoopEnd::Unused,
                 };
-                BlockInfo::LoopHead(LoopInfo { is_loop_stmt: *is_loop_stmt, loop_end })
-            },
+                BlockInfo::LoopHead(LoopInfo {
+                    is_loop_stmt: *is_loop_stmt,
+                    loop_end,
+                })
+            }
         };
         block_info.push((label_map[&lbl], info));
     }
@@ -546,7 +545,7 @@ fn finalize_blocks(
 fn statement(
     context: &mut Context,
     sp!(sloc, stmt): H::Statement,
-    mut current_block: BasicBlock
+    mut current_block: BasicBlock,
 ) -> (BasicBlock, BlockList) {
     use H::{Command_ as C, Statement_ as S};
     match stmt {
@@ -559,20 +558,23 @@ fn statement(
             let false_label = context.new_label();
             let phi_label = context.new_label();
 
-            let test_block =
-                VecDeque::from([sp(
-                    sloc,
-                    C::JumpIf {
-                        cond: *test,
-                        if_true: true_label,
-                        if_false: false_label,
-                    },
-                )]);
+            let test_block = VecDeque::from([sp(
+                sloc,
+                C::JumpIf {
+                    cond: *test,
+                    if_true: true_label,
+                    if_false: false_label,
+                },
+            )]);
 
-            let (true_entry_block, true_blocks) =
-                block_(context, with_last(if_block, make_jump(sloc, phi_label, false)));
-            let (false_entry_block, false_blocks) =
-                block_(context, with_last(else_block, make_jump(sloc, phi_label, false)));
+            let (true_entry_block, true_blocks) = block_(
+                context,
+                with_last(if_block, make_jump(sloc, phi_label, false)),
+            );
+            let (false_entry_block, false_blocks) = block_(
+                context,
+                with_last(else_block, make_jump(sloc, phi_label, false)),
+            );
 
             let new_blocks = vec![(true_label, true_entry_block)]
                 .into_iter()
@@ -606,8 +608,10 @@ fn statement(
                 block_(context, with_last(test_block, test_jump))
             };
 
-            let (body_entry_block, body_blocks) =
-                block_(context, with_last(body, make_jump(sloc, start_label, false)));
+            let (body_entry_block, body_blocks) = block_(
+                context,
+                with_last(body, make_jump(sloc, start_label, false)),
+            );
 
             context.end_loop();
 
@@ -629,8 +633,10 @@ fn statement(
 
             let entry_block = VecDeque::from([make_jump(sloc, start_label, false)]);
 
-            let (body_entry_block, body_blocks) =
-                block_(context, with_last(body, make_jump(sloc, start_label, false)));
+            let (body_entry_block, body_blocks) = block_(
+                context,
+                with_last(body, make_jump(sloc, start_label, false)),
+            );
 
             context.end_loop();
 
@@ -645,20 +651,26 @@ fn statement(
         S::Command(sp!(cloc, C::Break)) => {
             // Discard the current block because it's dead code.
             dead_code_error(context, &current_block);
-            (VecDeque::from([make_jump(
-                cloc,
-                context.loop_env.as_ref().unwrap().end_label,
-                true,
-            )]), vec![])
+            (
+                VecDeque::from([make_jump(
+                    cloc,
+                    context.loop_env.as_ref().unwrap().end_label,
+                    true,
+                )]),
+                vec![],
+            )
         }
         S::Command(sp!(cloc, C::Continue)) => {
             // Discard the current block because it's dead code.
             dead_code_error(context, &current_block);
-            (VecDeque::from([make_jump(
-                cloc,
-                context.loop_env.as_ref().unwrap().start_label,
-                true,
-            )]), vec![])
+            (
+                VecDeque::from([make_jump(
+                    cloc,
+                    context.loop_env.as_ref().unwrap().start_label,
+                    true,
+                )]),
+                vec![],
+            )
         }
         S::Command(cmd) if cmd.value.is_terminal() => {
             // Discard the current block because it's dead code.
@@ -672,14 +684,14 @@ fn statement(
     }
 }
 
-
-fn with_last(block: H::Block, sp!(loc, cmd): H::Command) -> H::Block {
+fn with_last(mut block: H::Block, sp!(loc, cmd): H::Command) -> H::Block {
     let stmt = sp(loc, H::Statement_::Command(sp(loc, cmd)));
-    block.into_iter().chain(vec![stmt]).collect::<H::Block>()
+    block.push_back(stmt);
+    block
 }
 
 fn make_jump(loc: Loc, target: Label, from_user: bool) -> H::Command {
-  sp(loc, H::Command_::Jump { target, from_user })
+    sp(loc, H::Command_::Jump { target, from_user })
 }
 
 fn dead_code_error(context: &mut Context, block: &BasicBlock) {

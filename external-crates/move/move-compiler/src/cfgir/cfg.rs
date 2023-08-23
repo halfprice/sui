@@ -285,11 +285,11 @@ const DEAD_ERR_EXP: &str = "Invalid use of a divergent expression. The code foll
 fn dead_code_error(diags: &mut Diagnostics, block: &BasicBlock) {
     match build_dead_code_error(block) {
         Some(diag) => diags.add(diag),
-        None => ()
+        None => (),
     }
 }
 
-pub fn build_dead_code_error(block: &BasicBlock) -> Option<Diagnostic>{
+pub fn build_dead_code_error(block: &BasicBlock) -> Option<Diagnostic> {
     if block.len() < 1 {
         None
     } else {
@@ -304,8 +304,6 @@ pub fn build_dead_code_error(block: &BasicBlock) -> Option<Diagnostic>{
         }
     }
 }
-
-
 
 fn unreachable_loc(sp!(_, cmd_): &Command) -> Option<Loc> {
     use Command_ as C;
