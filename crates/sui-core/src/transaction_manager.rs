@@ -5,8 +5,10 @@ use std::{
     cmp::max,
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
+use indexmap::IndexMap;
 use lru::LruCache;
 use mysten_metrics::monitored_scope;
 use parking_lot::RwLock;
@@ -239,10 +241,11 @@ struct Inner {
     // Maps input objects to transactions waiting for locks on the object.
     lock_waiters: HashMap<InputKey, LockQueue>,
 
-    // Number of transactions that depend on each object ID. Should match exactly with total
+    // Stores age info for all transactions depending on each object. Should match exactly with total
     // number of transactions per object ID prefix in the missing_inputs table.
     // Used for throttling signing and submitting transactions depending on hot objects.
-    input_objects: HashMap<ObjectID, usize>,
+    // An `IndexMap` is used to ensure that the insertion order is preserved.
+    input_objects: HashMap<ObjectID, IndexMap<TransactionDigest, Instant>>,
 
     // Maps object IDs to the highest observed sequence number of the object. When the value is
     // None, indicates that the object is immutable, corresponding to an InputKey with no sequence
@@ -305,14 +308,18 @@ impl Inner {
             return ready_certificates;
         }
 
-        let input_count = self.input_objects.get_mut(&input_key.0).unwrap_or_else(|| {
+        let input_txns = self.input_objects.get_mut(&input_key.0).unwrap_or_else(|| {
             panic!(
                 "# of transactions waiting on object {:?} cannot be 0",
                 input_key.0
             )
         });
-        *input_count -= digests.len();
-        if *input_count == 0 {
+        for digest in digests.iter() {
+            // The digest of the transaction must be inside the map.
+            assert!(input_txns.remove(digest).is_some());
+        }
+
+        if input_txns.is_empty() {
             self.input_objects.remove(&input_key.0);
         }
 
@@ -635,8 +642,8 @@ impl TransactionManager {
                 }
                 if acquire {
                     pending_cert.acquiring_locks.insert(key, lock_mode);
-                    let input_count = inner.input_objects.entry(key.0).or_default();
-                    *input_count += 1;
+                    let input_txns = inner.input_objects.entry(key.0).or_default();
+                    input_txns.insert(digest, Instant::now());
                 } else {
                     pending_cert.acquired_locks.insert(key, lock_mode);
                 }
@@ -825,14 +832,20 @@ impl TransactionManager {
             .map(|cert| cert.acquiring_locks.keys().cloned().collect())
     }
 
-    // Returns the number of transactions waiting on each object ID.
-    pub(crate) fn objects_queue_len(&self, keys: Vec<ObjectID>) -> Vec<(ObjectID, usize)> {
+    // Returns the number of transactions waiting on each object ID, as well as the age of the oldest transaction in the queue.
+    pub(crate) fn objects_queue_len_and_age(
+        &self,
+        keys: Vec<ObjectID>,
+    ) -> Vec<(ObjectID, usize, Option<Duration>)> {
         let inner = self.inner.read();
         keys.into_iter()
             .map(|key| {
+                let default_map = IndexMap::new();
+                let txns = inner.input_objects.get(&key).unwrap_or(&default_map);
                 (
                     key,
-                    inner.input_objects.get(&key).cloned().unwrap_or_default(),
+                    txns.len(),
+                    txns.first().map(|(_, time)| time.elapsed()),
                 )
             })
             .collect()

@@ -152,6 +152,9 @@ pub struct NodeConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_kv_store_write_config: Option<TransactionKeyValueStoreWriteConfig>,
+
+    #[serde(default)]
+    pub overload_threshold_config: OverloadThresholdConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -637,6 +640,25 @@ pub struct TransactionKeyValueStoreWriteConfig {
     pub table_name: String,
     pub bucket_name: String,
     pub concurrency: usize,
+}
+
+/// Configuration for the threshold(s) at which we consider the system
+/// to be overloaded. When one of the threshold is passed, the node may
+/// stop processing new transactions and/or certificates until the congestion
+/// resolves.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OverloadThresholdConfig {
+    pub max_txn_age_in_queue: Duration,
+    // TODO: Move other thresholds here as well, including `MAX_TM_QUEUE_LENGTH`
+    // and `MAX_PER_OBJECT_QUEUE_LENGTH`.
+}
+
+impl Default for OverloadThresholdConfig {
+    fn default() -> Self {
+        Self {
+            max_txn_age_in_queue: Duration::from_secs(60), // 1 minute
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq)]

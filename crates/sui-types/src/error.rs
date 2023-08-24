@@ -313,6 +313,13 @@ pub enum SuiError {
         threshold: usize,
     },
 
+    #[error("Input {object_id} has a transaction {txn_age_sec} seconds old pending, above threshold of {threshold} seconds")]
+    TooOldTransactionPendingOnObject {
+        object_id: ObjectID,
+        txn_age_sec: u64,
+        threshold: u64,
+    },
+
     // Signature verification
     #[error("Signature is not valid: {}", error)]
     InvalidSignature { error: String },
@@ -729,6 +736,7 @@ impl SuiError {
             // Overload errors
             SuiError::TooManyTransactionsPendingExecution { .. } => (true, true),
             SuiError::TooManyTransactionsPendingOnObject { .. } => (true, true),
+            SuiError::TooOldTransactionPendingOnObject { .. } => (true, true),
             SuiError::TooManyTransactionsPendingConsensus => (true, true),
 
             // Non retryable error
@@ -763,6 +771,7 @@ impl SuiError {
             self,
             SuiError::TooManyTransactionsPendingExecution { .. }
                 | SuiError::TooManyTransactionsPendingOnObject { .. }
+                | SuiError::TooOldTransactionPendingOnObject { .. }
                 | SuiError::TooManyTransactionsPendingConsensus
         )
     }

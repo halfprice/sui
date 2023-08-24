@@ -157,6 +157,7 @@ impl ValidatorConfigBuilder {
             transaction_kv_store_read_config: Default::default(),
             transaction_kv_store_write_config: None,
             enable_experimental_rest_api: true,
+            overload_threshold_config: Default::default(),
         }
     }
 
@@ -390,6 +391,7 @@ impl FullnodeConfigBuilder {
             transaction_kv_store_read_config: Default::default(),
             transaction_kv_store_write_config: Default::default(),
             enable_experimental_rest_api: true,
+            overload_threshold_config: Default::default(),
         }
     }
 }

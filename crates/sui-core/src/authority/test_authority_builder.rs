@@ -17,10 +17,10 @@ use std::sync::Arc;
 use sui_archival::reader::ArchiveReaderBalancer;
 use sui_config::certificate_deny_config::CertificateDenyConfig;
 use sui_config::genesis::Genesis;
-use sui_config::node::StateDebugDumpConfig;
 use sui_config::node::{
     AuthorityStorePruningConfig, DBCheckpointConfig, ExpensiveSafetyCheckConfig,
 };
+use sui_config::node::{OverloadThresholdConfig, StateDebugDumpConfig};
 use sui_config::transaction_deny_config::TransactionDenyConfig;
 use sui_macros::nondeterministic;
 use sui_protocol_config::{ProtocolConfig, SupportedProtocolVersions};
@@ -48,6 +48,7 @@ pub struct TestAuthorityBuilder<'a> {
     genesis: Option<&'a Genesis>,
     starting_objects: Option<&'a [Object]>,
     expensive_safety_checks: Option<ExpensiveSafetyCheckConfig>,
+    overload_threshold_config: Option<OverloadThresholdConfig>,
 }
 
 impl<'a> TestAuthorityBuilder<'a> {
@@ -121,6 +122,11 @@ impl<'a> TestAuthorityBuilder<'a> {
 
     pub fn with_expensive_safety_checks(mut self, config: ExpensiveSafetyCheckConfig) -> Self {
         assert!(self.expensive_safety_checks.replace(config).is_none());
+        self
+    }
+
+    pub fn with_overload_threshold_config(mut self, config: OverloadThresholdConfig) -> Self {
+        assert!(self.overload_threshold_config.replace(config).is_none());
         self
     }
 
@@ -215,6 +221,7 @@ impl<'a> TestAuthorityBuilder<'a> {
         )));
         let transaction_deny_config = self.transaction_deny_config.unwrap_or_default();
         let certificate_deny_config = self.certificate_deny_config.unwrap_or_default();
+        let overload_threshold_config = self.overload_threshold_config.unwrap_or_default();
         let state = AuthorityState::new(
             name,
             secret,
@@ -235,6 +242,7 @@ impl<'a> TestAuthorityBuilder<'a> {
             StateDebugDumpConfig {
                 dump_file_directory: Some(tempdir().unwrap().into_path()),
             },
+            overload_threshold_config,
             ArchiveReaderBalancer::default(),
         )
         .await;
