@@ -1531,6 +1531,44 @@ impl CertificateV2 {
     }
 }
 
+pub fn validate_received_certificate_version(
+    certificate: &mut Certificate,
+    protocol_config: &ProtocolConfig,
+) -> anyhow::Result<()> {
+    // If network has advanced to using version 25, which sets narwhal_certificate_v2
+    // to true, we will start using CertificateV2 locally and so we will only accept
+    // CertificateV2 from the network. Otherwise CertificateV1 is used.
+    match certificate {
+        Certificate::V1(_) => {
+            // CertificateV1 does not have a concept of aggregated signature state
+            // so there is nothing to reset.
+            if protocol_config.narwhal_certificate_v2() {
+                return Err(anyhow::anyhow!(format!(
+                    "Received CertificateV1 {certificate:?} but network is at {:?} and this certificate version is no longer supported",
+                    protocol_config.version
+                )));
+            }
+        }
+        Certificate::V2(_) => {
+            if !protocol_config.narwhal_certificate_v2() {
+                return Err(anyhow::anyhow!(format!(
+                    "Received CertificateV2 {certificate:?} but network is at {:?} and this certificate version is not supported yet",
+                    protocol_config.version
+                )));
+            } else {
+                // CertificateV2 was received from the network so we need to mark
+                // certificate aggregated signature state as unverified.
+                certificate.set_aggregate_signature_verification_state(
+                    AggregateSignatureVerificationState::Unverified(
+                        certificate.aggregated_signature().clone(),
+                    ),
+                );
+            }
+        }
+    };
+    Ok(())
+}
+
 #[derive(
     Clone,
     Copy,
