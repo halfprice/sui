@@ -95,8 +95,9 @@ async fn test_snapshot_basic() -> Result<(), anyhow::Error> {
     .await?;
     let restored_perpetual_db = AuthorityPerpetualTables::open(&restored_db_path, None);
     let (_abort_handle, abort_registration) = AbortHandle::new_pair();
+    let (sha3_digests, _acc) = snapshot_reader.get_checksums()?;
     snapshot_reader
-        .read(&restored_perpetual_db, abort_registration)
+        .read(&restored_perpetual_db, sha3_digests, abort_registration)
         .await?;
     compare_live_objects(&perpetual_db, &restored_perpetual_db, true)?;
     Ok(())
@@ -147,8 +148,9 @@ async fn test_snapshot_empty_db() -> Result<(), anyhow::Error> {
     .await?;
     let restored_perpetual_db = AuthorityPerpetualTables::open(&restored_db_path, None);
     let (_abort_handle, abort_registration) = AbortHandle::new_pair();
+    let (sha3_digests, _acc) = snapshot_reader.get_checksums()?;
     snapshot_reader
-        .read(&restored_perpetual_db, abort_registration)
+        .read(&restored_perpetual_db, sha3_digests, abort_registration)
         .await?;
     compare_live_objects(
         &perpetual_db,

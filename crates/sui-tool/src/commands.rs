@@ -3,8 +3,8 @@
 
 use crate::{
     db_tool::{execute_db_tool_command, print_db_all_tables, DbToolCommand},
-    download_db_snapshot, get_object, get_transaction_block, make_clients,
-    restore_from_db_checkpoint, state_sync_from_archive, verify_archive,
+    download_db_snapshot, download_formal_snapshot, get_object, get_transaction_block,
+    make_clients, restore_from_db_checkpoint, state_sync_from_archive, verify_archive,
     verify_archive_by_checksum, ConciseObjectOutput, GroupedObjectOutput, VerboseObjectOutput,
 };
 use anyhow::{anyhow, Result};
@@ -204,23 +204,31 @@ pub enum ToolCommand {
     #[clap(name = "download-db-snapshot")]
     DownloadDBSnapshot {
         #[clap(long = "epoch")]
-        epoch: u32,
+        epoch: u64,
         #[clap(long = "genesis")]
         genesis: PathBuf,
         #[clap(long = "path", default_value = "/tmp")]
         path: PathBuf,
-        // skip downloading checkpoints dir
+        /// skip downloading checkpoints dir. Overridden to `true` if `--formal` flag specified
         #[clap(long = "skip-checkpoints")]
         skip_checkpoints: bool,
-        // skip downloading indexes dir
+        /// skip downloading indexes dir. Overridden to `true` if `--formal` flag specified,
+        /// as index staging is not yet supported for formal snapshots.
         #[clap(long = "skip-indexes")]
         skip_indexes: bool,
         #[clap(long = "num-parallel-downloads", default_value = "2")]
         num_parallel_downloads: usize,
-        #[clap(long = "snapshot-bucket", default_value = "mysten-mainnet-snapshots")]
-        snapshot_bucket: String,
-        #[clap(long = "snapshot-bucket-type", default_value = "s3")]
-        snapshot_bucket_type: ObjectStoreType,
+        /// If true, restore from formal (slim, DB agnostic) snapshot
+        #[clap(long = "formal")]
+        formal: bool,
+        /// Snapshot bucket name. Defaults to "mysten-mainnet-formal" if `--formal`
+        /// flag specified, otherwise "mysten-mainnet-snapshots".
+        #[clap(long = "snapshot-bucket")]
+        snapshot_bucket: Option<String>,
+        /// Snapshot bucket type. Defaults to "gcs" if `--formal`
+        /// flag specified, otherwise "s3".
+        #[clap(long = "snapshot-bucket-type")]
+        snapshot_bucket_type: Option<ObjectStoreType>,
         #[clap(long = "archive-bucket", default_value = "mysten-mainnet-archives")]
         archive_bucket: String,
         #[clap(long = "archive-bucket-type", default_value = "s3")]
@@ -420,11 +428,33 @@ impl ToolCommand {
                 skip_checkpoints,
                 skip_indexes,
                 num_parallel_downloads,
+                formal,
                 snapshot_bucket,
                 snapshot_bucket_type,
                 archive_bucket,
                 archive_bucket_type,
             } => {
+                let snapshot_bucket = snapshot_bucket.unwrap_or_else(|| {
+                    if formal {
+                        "mysten-mainnet-formal".to_string()
+                    } else {
+                        "mysten-mainnet-snapshots".to_string()
+                    }
+                });
+                let snapshot_bucket_type = snapshot_bucket_type.unwrap_or_else(|| {
+                    if formal {
+                        ObjectStoreType::GCS
+                    } else {
+                        ObjectStoreType::S3
+                    }
+                });
+
+                // index staging is not yet supported for formal snapshots
+                let skip_indexes = skip_indexes || formal;
+                // Checkpoint db does not exist in formal snapshots and
+                // is not reconstructed during formal snapshot restore
+                let skip_checkpoints = skip_checkpoints || formal;
+
                 let snapshot_store_config = match snapshot_bucket_type {
                     ObjectStoreType::S3 => {
                         ObjectStoreConfig {
@@ -517,17 +547,29 @@ impl ToolCommand {
                     ObjectStoreType::File => panic!("Download from local filesystem is not supported")
                 };
 
-                download_db_snapshot(
-                    &path,
-                    epoch,
-                    &genesis,
-                    snapshot_store_config,
-                    archive_store_config,
-                    skip_checkpoints,
-                    skip_indexes,
-                    num_parallel_downloads,
-                )
-                .await?;
+                if formal {
+                    download_formal_snapshot(
+                        &path,
+                        epoch,
+                        &genesis,
+                        snapshot_store_config,
+                        archive_store_config,
+                        num_parallel_downloads,
+                    )
+                    .await?;
+                } else {
+                    download_db_snapshot(
+                        &path,
+                        epoch,
+                        &genesis,
+                        snapshot_store_config,
+                        archive_store_config,
+                        skip_checkpoints,
+                        skip_indexes,
+                        num_parallel_downloads,
+                    )
+                    .await?;
+                }
             }
             ToolCommand::Replay {
                 rpc_url,
