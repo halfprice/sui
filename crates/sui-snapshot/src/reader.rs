@@ -30,6 +30,7 @@ use sui_storage::object_store::ObjectStoreConfig;
 use sui_types::accumulator::Accumulator;
 use sui_types::base_types::{ObjectDigest, ObjectID, ObjectRef, SequenceNumber};
 use tokio::sync::Mutex;
+use tracing::info;
 
 pub type SnapshotChecksums = (DigestByBucketAndPartition, Accumulator);
 pub type DigestByBucketAndPartition = BTreeMap<u32, BTreeMap<u32, [u8; 32]>>;
@@ -190,6 +191,7 @@ impl StateSnapshotReaderV1 {
         sha3_digests: DigestByBucketAndPartition,
         abort_registration: AbortRegistration,
     ) -> Result<()> {
+        info!("TESTING -- in reader.read");
         let sha3_digests: Arc<Mutex<DigestByBucketAndPartition>> =
             Arc::new(Mutex::new(sha3_digests));
 

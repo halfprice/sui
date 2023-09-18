@@ -42,7 +42,7 @@ use sui_core::checkpoints::CheckpointStore;
 use sui_core::db_checkpoint_handler::SUCCESS_MARKER;
 use sui_core::epoch::committee_store::CommitteeStore;
 use sui_core::storage::RocksDbStore;
-use sui_snapshot::reader::StateSnapshotReaderV1;
+use sui_snapshot::reader::{SnapshotChecksums, StateSnapshotReaderV1};
 use sui_storage::object_store::util::{copy_file, get_path};
 use sui_storage::object_store::{ObjectStoreConfig, ObjectStoreType};
 use sui_types::messages_grpc::{
@@ -638,6 +638,7 @@ fn start_summary_sync(
     num_parallel_downloads: usize,
 ) -> JoinHandle<Result<(), anyhow::Error>> {
     tokio::spawn(async move {
+        info!("Starting summary sync");
         let genesis = Genesis::load(genesis_path).unwrap();
         let genesis_committee = genesis.committee()?;
         let checkpoint_store = Arc::new(CheckpointStore::open_tables_read_write(
@@ -748,6 +749,7 @@ pub async fn download_formal_snapshot(
     archive_store_config: ObjectStoreConfig,
     num_parallel_downloads: usize,
 ) -> Result<(), anyhow::Error> {
+    info!("TESTING -- calling download formal snapshot");
     let m = MultiProgress::new();
     let path = path.to_path_buf();
     let genesis = genesis.to_path_buf();
@@ -768,9 +770,14 @@ pub async fn download_formal_snapshot(
     .await?;
 
     // TODO use abort handle and checksums for verification
-    let (sha3_digests, accumulator) = reader.get_checksums().await?;
-    let (_abort_handle, abort_registration) = AbortHandle::new_pair();
+    info!("TESTING -- before starting checksums task");
+    let checksums_handle = tokio::spawn(async move {
+        let (sha3_digests, accumulator) = reader.get_checksums().await?;
+        Ok::<SnapshotChecksums, anyhow::Error>((sha3_digests, accumulator))
+    });
+    info!("TESTING -- after starting checksums task");
 
+    info!("TESTING -- before starting summary sync task");
     let summaries_handle = start_summary_sync(
         m.clone(),
         path.clone(),
@@ -780,19 +787,29 @@ pub async fn download_formal_snapshot(
         epoch,
         num_parallel_downloads,
     );
+    info!("TESTING -- after starting summary sync task");
 
+    let (_abort_handle, abort_registration) = AbortHandle::new_pair();
     let path_clone = path.clone();
+
+    let (sha3_digests, accumulator) = checksums_handle.await??;
+    // TODO -- perform verification and abort read if verification fails
+
+    info!("TESTING -- before starting reader.read task");
     let snapshot_handle = tokio::spawn(async move {
         let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
             &path_clone.join(format!("epoch_{}", epoch)).join("store"),
             None,
         ));
 
+        info!("TESTING -- before reader.read");
         reader
             .read(&perpetual_db, sha3_digests, abort_registration)
             .await?;
+        info!("TESTING -- after reader.read");
         Ok::<(), anyhow::Error>(())
     });
+    info!("TESTING -- after starting reader.read task");
 
     // TODO instead join on just the summaries handle, then perform verification,
     // then either abort or join on the snapshot handle
