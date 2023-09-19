@@ -23,6 +23,7 @@ use sui_types::crypto::AuthorityPublicKeyBytes;
 use sui_types::multiaddr::Multiaddr;
 use sui_types::object::ObjectFormatOptions;
 use sui_types::{base_types::*, object::Owner};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -750,32 +751,10 @@ pub async fn download_formal_snapshot(
     num_parallel_downloads: usize,
 ) -> Result<(), anyhow::Error> {
     info!("TESTING -- calling download formal snapshot");
+    let path = path.join("staging").to_path_buf();
     let m = MultiProgress::new();
-    let path = path.to_path_buf();
     let genesis = genesis.to_path_buf();
     let highest_pruned_checkpoint = Arc::new(AtomicU64::new(0));
-
-    let local_store_config = ObjectStoreConfig {
-        object_store: Some(ObjectStoreType::File),
-        directory: Some(path.to_path_buf()),
-        ..Default::default()
-    };
-    let mut reader = StateSnapshotReaderV1::new(
-        epoch,
-        &snapshot_store_config,
-        &local_store_config,
-        usize::MAX,
-        NonZeroUsize::new(num_parallel_downloads).unwrap(),
-    )
-    .await?;
-
-    // TODO use abort handle and checksums for verification
-    info!("TESTING -- before starting checksums task");
-    let checksums_handle = tokio::spawn(async move {
-        let (sha3_digests, accumulator) = reader.get_checksums().await?;
-        Ok::<SnapshotChecksums, anyhow::Error>((sha3_digests, accumulator))
-    });
-    info!("TESTING -- after starting checksums task");
 
     info!("TESTING -- before starting summary sync task");
     let summaries_handle = start_summary_sync(
@@ -791,30 +770,52 @@ pub async fn download_formal_snapshot(
 
     let (_abort_handle, abort_registration) = AbortHandle::new_pair();
     let path_clone = path.clone();
-
-    let (sha3_digests, accumulator) = checksums_handle.await??;
-    // TODO -- perform verification and abort read if verification fails
+    let (sender, receiver) = oneshot::channel();
 
     info!("TESTING -- before starting reader.read task");
     let snapshot_handle = tokio::spawn(async move {
+        let mut path = path_clone.clone();
+        let local_store_config = ObjectStoreConfig {
+            object_store: Some(ObjectStoreType::File),
+            directory: Some(path.join("snapshots").to_path_buf()),
+            ..Default::default()
+        };
+
         let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
-            &path_clone.join(format!("epoch_{}", epoch)).join("store"),
+            &path.join(format!("epoch_{}", epoch)).join("store"),
             None,
         ));
 
+        info!("TESTING -- before reader constructor (fetching refs)");
+        let mut reader = StateSnapshotReaderV1::new(
+            epoch,
+            &snapshot_store_config,
+            &local_store_config,
+            usize::MAX,
+            NonZeroUsize::new(num_parallel_downloads).unwrap(),
+            m,
+        )
+        .await?;
+        info!("TESTING -- after reader constructor (done fetching refs)");
+
         info!("TESTING -- before reader.read");
         reader
-            .read(&perpetual_db, sha3_digests, abort_registration)
+            .read(&perpetual_db, abort_registration, Some(sender))
             .await?;
         info!("TESTING -- after reader.read");
         Ok::<(), anyhow::Error>(())
     });
     info!("TESTING -- after starting reader.read task");
 
-    // TODO instead join on just the summaries handle, then perform verification,
-    // then either abort or join on the snapshot handle
+    info!("TESTING -- awaiting accumuator receiver");
+    let accumulator = receiver.await?;
+    info!("TESTING -- accumuator received!");
+    // TODO perform verification
+
     let tasks: Vec<_> = vec![Box::pin(snapshot_handle), Box::pin(summaries_handle)];
+    info!("TESTING -- about to await all tasks!");
     join_all(tasks).await;
+    info!("TESTING -- done awaiting all tasks!");
 
     let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
         &path.join(format!("epoch_{}", epoch)).join("store"),
@@ -845,15 +846,11 @@ pub async fn download_formal_snapshot(
         .set_epoch_start_configuration(&epoch_start_configuration)
         .await?;
 
-    // TODO do we need these? Are these deleting the dbs????
-    let store_dir = path.join("store");
-    if store_dir.exists() {
-        fs::remove_dir_all(&store_dir)?;
-    }
-    let epochs_dir = path.join("epochs");
-    if epochs_dir.exists() {
-        fs::remove_dir_all(&epochs_dir)?;
-    }
+    let new_path = path
+        .parent()
+        .expect("Root is not a valid path")
+        .join("live");
+    fs::rename(&path, &new_path)?;
 
     Ok(())
 }

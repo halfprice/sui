@@ -12,6 +12,7 @@ use fastcrypto::hash::MultisetHash;
 use fastcrypto::hash::{HashFunction, Sha3_256};
 use futures::future::{AbortRegistration, Abortable};
 use futures::{StreamExt, TryStreamExt};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use integer_encoding::VarIntReader;
 use object_store::path::Path;
 use object_store::DynObjectStore;
@@ -21,6 +22,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use sui_core::authority::authority_store_tables::{AuthorityPerpetualTables, LiveObject};
 use sui_core::authority::AuthorityStore;
@@ -30,6 +32,7 @@ use sui_storage::object_store::ObjectStoreConfig;
 use sui_types::accumulator::Accumulator;
 use sui_types::base_types::{ObjectDigest, ObjectID, ObjectRef, SequenceNumber};
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tracing::info;
 
 pub type SnapshotChecksums = (DigestByBucketAndPartition, Accumulator);
@@ -42,6 +45,7 @@ pub struct StateSnapshotReaderV1 {
     ref_files: BTreeMap<u32, BTreeMap<u32, FileMetadata>>,
     object_files: BTreeMap<u32, BTreeMap<u32, FileMetadata>>,
     indirect_objects_threshold: usize,
+    m: MultiProgress,
     concurrency: usize,
 }
 
@@ -52,6 +56,7 @@ impl StateSnapshotReaderV1 {
         local_store_config: &ObjectStoreConfig,
         indirect_objects_threshold: usize,
         download_concurrency: NonZeroUsize,
+        m: MultiProgress,
     ) -> Result<Self> {
         let epoch_dir = format!("epoch_{}", epoch);
         let remote_object_store = remote_store_config.make()?;
@@ -122,14 +127,25 @@ impl StateSnapshotReaderV1 {
                 files
             })
             .collect();
+
+        let progress_bar = m.add(
+            ProgressBar::new(files.len() as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} .ref files done\n({msg})",
+                )
+                .unwrap(),
+            ),
+        );
         copy_files(
             &files,
             &files,
             remote_object_store.clone(),
             local_object_store.clone(),
-            NonZeroUsize::new(1).unwrap(),
+            download_concurrency,
+            Some(progress_bar.clone()),
         )
         .await?;
+        progress_bar.finish_with_message("ref files download complete");
         Ok(StateSnapshotReaderV1 {
             epoch,
             local_staging_dir_root,
@@ -138,25 +154,43 @@ impl StateSnapshotReaderV1 {
             ref_files,
             object_files,
             indirect_objects_threshold,
+            m,
             concurrency: download_concurrency.get(),
         })
     }
 
-    /// Compute the two pieces of data used to confirm validity of the snapshot:
-    /// 1. The per-bucket/partition SHA3 digests of all corresponding objects. This
-    ///     is used to confirm that the contents of the downloaded snapshot match what
-    ///     was written to the object store.
-    /// 2. The accumulator of all ObjectRefs contained in the snapshot. This is used to
-    ///     confirm that the contents of the downloaded snapshot match what was committed
-    ///     to by the network at the end of the corresponding epoch
-    pub async fn get_checksums(&self) -> Result<SnapshotChecksums> {
-        // let mut sha3_digests: DigestByBucketAndPartition = BTreeMap::new();
+    pub async fn read(
+        &mut self,
+        perpetual_db: &AuthorityPerpetualTables,
+        abort_registration: AbortRegistration,
+        sender: Option<tokio::sync::oneshot::Sender<Accumulator>>,
+    ) -> Result<()> {
+        // This computes and stores the sha3 digest of object references in REFERENCE file for each
+        // bucket partition. When downloading objects, we will match sha3 digest of object references
+        // per *.obj file against this. We do this so during restore we can pre fetch object
+        // references and start building state accumulator and fail early if the state root hash
+        // doesn't match but we still need to ensure that objects match references exactly.
         let sha3_digests: Arc<Mutex<DigestByBucketAndPartition>> =
             Arc::new(Mutex::new(BTreeMap::new()));
         let mut accumulator = Accumulator::default();
 
+        info!("Computing sha3 digests and accumulator");
+        let mut instant = Instant::now();
+        let num_part_files = self
+            .ref_files
+            .iter()
+            .map(|(_bucket, part_files)| part_files.len())
+            .sum::<usize>();
+        let accum_progress_bar = self.m.add(
+            ProgressBar::new(num_part_files as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} ref files accumulated ({msg})",
+                )
+                .unwrap(),
+            ),
+        );
         for (bucket, part_files) in self.ref_files.clone().iter() {
-            for (part, _part_file) in part_files.iter() {
+            for (part, part_file) in part_files.iter() {
                 let mut sha3_digests = sha3_digests.lock().await;
                 let ref_iter = self.ref_iter(*bucket, *part)?;
                 let mut hasher = Sha3_256::default();
@@ -169,7 +203,6 @@ impl StateSnapshotReaderV1 {
                 for object_ref in ref_iter {
                     hasher.update(object_ref.2.inner());
                     accumulator.insert(object_ref.2);
-                    empty = false;
                 }
                 if !empty {
                     sha3_digests
@@ -178,22 +211,19 @@ impl StateSnapshotReaderV1 {
                         .entry(*part)
                         .or_insert(hasher.finalize().digest);
                 }
+                accum_progress_bar.inc(1);
+                accum_progress_bar.set_message(format!("Bucket: {}, Part: {}", bucket, part));
+                instant = Instant::now();
+                empty = false;
             }
         }
+        accum_progress_bar.finish_with_message("Accumulation complete");
 
-        let sha3_digests_ret = sha3_digests.lock().await.clone();
-        Ok((sha3_digests_ret, accumulator))
-    }
-
-    pub async fn read(
-        &mut self,
-        perpetual_db: &AuthorityPerpetualTables,
-        sha3_digests: DigestByBucketAndPartition,
-        abort_registration: AbortRegistration,
-    ) -> Result<()> {
-        info!("TESTING -- in reader.read");
-        let sha3_digests: Arc<Mutex<DigestByBucketAndPartition>> =
-            Arc::new(Mutex::new(sha3_digests));
+        if let Some(sender) = sender {
+            if let Err(_) = sender.send(accumulator) {
+                panic!("Unable to send accumulator from snapshot reader")
+            }
+        }
 
         let input_files: Vec<_> = self
             .object_files
@@ -207,7 +237,19 @@ impl StateSnapshotReaderV1 {
         let remote_object_store = self.remote_object_store.clone();
         let indirect_objects_threshold = self.indirect_objects_threshold;
         let download_concurrency = self.concurrency;
-        Abortable::new(
+        let obj_progress_bar = self.m.add(
+            ProgressBar::new(input_files.len() as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} .obj files done\n({msg})",
+                )
+                .unwrap(),
+            ),
+        );
+        let obj_progress_bar_clone = obj_progress_bar.clone();
+        let downloaded_bytes = AtomicUsize::new(0);
+        let file_counter = Arc::new(AtomicUsize::new(0));
+        let mut instant = Instant::now();
+        let ret = Abortable::new(
             async move {
                 futures::stream::iter(input_files.iter())
                     .map(|(bucket, (part_num, file_metadata))| {
@@ -235,6 +277,9 @@ impl StateSnapshotReaderV1 {
                     .boxed()
                     .buffer_unordered(download_concurrency)
                     .try_for_each(|(bytes, file_metadata, sha3_digest)| {
+                        let epoch_dir = epoch_dir.clone();
+                        let path = file_metadata.file_path(&epoch_dir);
+                        let bytes_len = bytes.len();
                         let result: Result<(), anyhow::Error> =
                             LiveObjectIter::new(&file_metadata, bytes).and_then(|obj_iter| {
                                 AuthorityStore::bulk_insert_live_objects(
@@ -245,13 +290,26 @@ impl StateSnapshotReaderV1 {
                                 )?;
                                 Ok::<(), anyhow::Error>(())
                             });
+                        file_counter.fetch_sub(1, Ordering::Relaxed);
+                        downloaded_bytes.fetch_add(bytes_len, Ordering::Relaxed);
+                        obj_progress_bar_clone.inc(1);
+                        obj_progress_bar_clone.set_message(format!(
+                            "Download speed: {} MiB/s, file: {}, #downloads_in_progress: {}",
+                            downloaded_bytes.load(Ordering::Relaxed) as f64
+                                / (1024 * 1024) as f64
+                                / instant.elapsed().as_secs_f64(),
+                            path,
+                            file_counter.load(Ordering::Relaxed)
+                        ));
                         futures::future::ready(result)
                     })
                     .await
             },
             abort_registration,
         )
-        .await?
+        .await?;
+        obj_progress_bar.finish_with_message("Objects download complete");
+        ret
     }
 
     pub fn ref_iter(&self, bucket_num: u32, part_num: u32) -> Result<ObjectRefIter> {
@@ -361,6 +419,7 @@ pub struct LiveObjectIter {
 
 impl LiveObjectIter {
     pub fn new(file_metadata: &FileMetadata, bytes: Bytes) -> Result<Self> {
+        info!("TESTING -- bytes len: {}", bytes.len());
         let mut reader = file_metadata.file_compression.bytes_decompress(bytes)?;
         let magic = reader.read_u32::<BigEndian>()?;
         if magic != OBJECT_FILE_MAGIC {
