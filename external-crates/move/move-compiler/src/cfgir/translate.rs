@@ -409,6 +409,8 @@ fn function(
     }
 }
 
+const DEBUG_PRINT: bool = false;
+
 fn function_body(
     context: &mut Context,
     module: Option<ModuleIdent>,
@@ -424,11 +426,20 @@ fn function_body(
     let b_ = match tb_ {
         HB::Native => GB::Native,
         HB::Defined { locals, body } => {
+            if DEBUG_PRINT {
+                println!("-----------------------------------------------------------------------");
+                println!("Processing {:?}", name);
+                crate::shared::ast_debug::print_verbose(&body);
+            }
+
             let blocks = block(context, body);
             let (start, mut blocks, block_info) = finalize_blocks(context, blocks);
             context.clear_block_state();
-
             let binfo = block_info.iter().map(|(lbl, info)| (lbl, info));
+            if DEBUG_PRINT {
+                println!("-------------------------------");
+                crate::shared::ast_debug::print_verbose(&blocks);
+            }
             let (mut cfg, infinite_loop_starts, diags) =
                 MutForwardCFG::new(start, &mut blocks, binfo);
             context.env.add_diags(diags);
