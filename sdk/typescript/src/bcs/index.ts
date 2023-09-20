@@ -25,7 +25,10 @@ export type SharedObjectRef = {
 /**
  * An object argument.
  */
-export type ObjectArg = { ImmOrOwned: SuiObjectRef } | { Shared: SharedObjectRef };
+export type ObjectArg =
+	| { ImmOrOwned: SuiObjectRef }
+	| { Shared: SharedObjectRef }
+	| { Receiving: SuiObjectRef };
 
 /**
  * A pure argument.
@@ -132,6 +135,7 @@ const BCS_SPEC: TypeSchema = {
 		ObjectArg: {
 			ImmOrOwned: 'SuiObjectRef',
 			Shared: 'SharedObjectRef',
+			Receiving: 'SuiObjectRef',
 		},
 		CallArg: {
 			Pure: [VECTOR, BCS.U8],
