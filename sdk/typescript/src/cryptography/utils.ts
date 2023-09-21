@@ -47,8 +47,8 @@ export function toParsedSignaturePubkeyPair(
 		}
 	}
 
-	if (signatureScheme === 'Zk') {
-		throw new Error('Unable to parse a zk signature. (not implemented yet)');
+	if (signatureScheme === 'ZkLogin') {
+		throw new Error('Unable to parse a zkLogin signature. (not implemented yet)');
 	}
 
 	const SIGNATURE_SCHEME_TO_PUBLIC_KEY = {

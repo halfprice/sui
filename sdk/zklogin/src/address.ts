@@ -19,7 +19,7 @@ export function jwtToAddress(jwt: string, userSalt: bigint) {
 		throw new Error('Not supported aud. Aud is an array, string was expected.');
 	}
 
-	return computeZkAddress({
+	return computeZkLoginAddress({
 		userSalt,
 		claimName: 'sub',
 		claimValue: decodedJWT.sub,
@@ -28,7 +28,7 @@ export function jwtToAddress(jwt: string, userSalt: bigint) {
 	});
 }
 
-export interface ComputeZKAddressOptions {
+export interface ComputeZkLoginAddressOptions {
 	claimName: string;
 	claimValue: string;
 	userSalt: bigint;
@@ -36,20 +36,20 @@ export interface ComputeZKAddressOptions {
 	aud: string;
 }
 
-export function computeZkAddress({
+export function computeZkLoginAddress({
 	claimName,
 	claimValue,
 	iss,
 	aud,
 	userSalt,
-}: ComputeZKAddressOptions) {
+}: ComputeZkLoginAddressOptions) {
 	const addressSeedBytesBigEndian = toBufferBE(
 		genAddressSeed(userSalt, claimName, claimValue, aud),
 		32,
 	);
 	const addressParamBytes = Buffer.from(iss);
 	const tmp = new Uint8Array(2 + addressSeedBytesBigEndian.length + addressParamBytes.length);
-	tmp.set([SIGNATURE_SCHEME_TO_FLAG.Zk]);
+	tmp.set([SIGNATURE_SCHEME_TO_FLAG.ZkLogin]);
 	tmp.set([addressParamBytes.length], 1);
 	tmp.set(addressParamBytes, 2);
 	tmp.set(addressSeedBytesBigEndian, 2 + addressParamBytes.length);

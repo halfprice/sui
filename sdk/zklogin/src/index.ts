@@ -1,11 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-export { computeZkAddress, jwtToAddress } from './address.js';
-export type { ComputeZKAddressOptions } from './address.js';
+export { computeZkLoginAddress, jwtToAddress } from './address.js';
+export type { ComputeZkLoginAddressOptions } from './address.js';
 
-export { getZkSignature } from './bcs.js';
-export type { ZkSignatureInputs } from './bcs.js';
+export { getZkLoginSignature } from './bcs.js';
+export type { ZkLoginSignatureInputs } from './bcs.js';
 
 export { poseidonHash } from './poseidon.js';
 

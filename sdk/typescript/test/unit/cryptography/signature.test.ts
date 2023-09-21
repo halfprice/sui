@@ -183,7 +183,7 @@ describe('Signature', () => {
 		let invalidSignature = toB64(bytes);
 
 		expect(() => parseSerializedSignature(invalidSignature)).toThrowError(
-			new Error('Unable to parse a zk signature. (not implemented yet)'),
+			new Error('Unable to parse a zkLogin signature. (not implemented yet)'),
 		);
 
 		bytes = fromB64(sig2.signature);

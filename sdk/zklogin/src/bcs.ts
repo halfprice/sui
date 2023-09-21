@@ -5,7 +5,7 @@ import { BCS, fromB64, toB64 } from '@mysten/bcs';
 import { bcs } from '@mysten/sui.js/bcs';
 import { SIGNATURE_SCHEME_TO_FLAG } from '@mysten/sui.js/cryptography';
 
-export const zkBcs = new BCS(bcs);
+export const zkLoginBcs = new BCS(bcs);
 
 type ProofPoints = {
 	a: string[];
@@ -18,20 +18,20 @@ type IssBase64 = {
 	indexMod4: number;
 };
 
-export interface ZkSignatureInputs {
+export interface ZkLoginSignatureInputs {
 	proofPoints: ProofPoints;
 	issBase64Details: IssBase64;
 	headerBase64: string;
 	addressSeed: string;
 }
 
-export interface ZkSignature {
-	inputs: ZkSignatureInputs;
+export interface ZkLoginSignature {
+	inputs: ZkLoginSignatureInputs;
 	maxEpoch: number;
 	userSignature: string | Uint8Array;
 }
 
-zkBcs.registerStructType('ZkloginSignature', {
+zkLoginBcs.registerStructType('ZkLoginSignature', {
 	inputs: {
 		proofPoints: {
 			a: [BCS.VECTOR, BCS.STRING],
@@ -49,10 +49,10 @@ zkBcs.registerStructType('ZkloginSignature', {
 	userSignature: [BCS.VECTOR, BCS.U8],
 });
 
-function getZkSignatureBytes({ inputs, maxEpoch, userSignature }: ZkSignature) {
-	return zkBcs
+function getZkLoginSignatureBytes({ inputs, maxEpoch, userSignature }: ZkLoginSignature) {
+	return zkLoginBcs
 		.ser(
-			'ZkloginSignature',
+			'ZkLoginSignature',
 			{
 				inputs,
 				maxEpoch,
@@ -63,10 +63,10 @@ function getZkSignatureBytes({ inputs, maxEpoch, userSignature }: ZkSignature) {
 		.toBytes();
 }
 
-export function getZkSignature({ inputs, maxEpoch, userSignature }: ZkSignature) {
-	const bytes = getZkSignatureBytes({ inputs, maxEpoch, userSignature });
+export function getZkLoginSignature({ inputs, maxEpoch, userSignature }: ZkLoginSignature) {
+	const bytes = getZkLoginSignatureBytes({ inputs, maxEpoch, userSignature });
 	const signatureBytes = new Uint8Array(bytes.length + 1);
-	signatureBytes.set([SIGNATURE_SCHEME_TO_FLAG['Zk']]);
+	signatureBytes.set([SIGNATURE_SCHEME_TO_FLAG.ZkLogin]);
 	signatureBytes.set(bytes, 1);
 	return toB64(signatureBytes);
 }
