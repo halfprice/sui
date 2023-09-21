@@ -229,6 +229,10 @@ pub enum ToolCommand {
         /// flag specified, otherwise "s3".
         #[clap(long = "snapshot-bucket-type")]
         snapshot_bucket_type: Option<ObjectStoreType>,
+        /// Path to snapshot directory on local filesystem.
+        /// Only applicable if `--snapshot-bucket-type` is "file".
+        #[clap(long = "snapshot-path")]
+        snapshot_path: Option<PathBuf>,
         #[clap(long = "archive-bucket", default_value = "mysten-mainnet-archives")]
         archive_bucket: String,
         #[clap(long = "archive-bucket-type", default_value = "s3")]
@@ -431,6 +435,7 @@ impl ToolCommand {
                 formal,
                 snapshot_bucket,
                 snapshot_bucket_type,
+                snapshot_path,
                 archive_bucket,
                 archive_bucket_type,
             } => {
@@ -498,7 +503,17 @@ impl ToolCommand {
                             ..Default::default()
                         }
                     },
-                    ObjectStoreType::File => panic!("Download from local filesystem is not supported")
+                    ObjectStoreType::File => {
+                        if snapshot_path.is_some() {
+                            ObjectStoreConfig {
+                                object_store: Some(ObjectStoreType::File),
+                                directory: snapshot_path,
+                                ..Default::default()
+                            }
+                        } else {
+                            panic!("--snapshot-path must be specified for --snapshot-bucket-type=file");
+                        }
+                    }
                 };
 
                 let archive_store_config = match archive_bucket_type {

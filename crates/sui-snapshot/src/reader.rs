@@ -43,7 +43,7 @@ pub struct StateSnapshotReaderV1 {
     local_staging_dir_root: PathBuf,
     remote_object_store: Arc<DynObjectStore>,
     local_object_store: Arc<DynObjectStore>,
-    ref_files: BTreeMap<u32, BTreeMap<u32, FileMetadata>>,
+    pub ref_files: BTreeMap<u32, BTreeMap<u32, FileMetadata>>, // TODO(william) make private
     object_files: BTreeMap<u32, BTreeMap<u32, FileMetadata>>,
     indirect_objects_threshold: usize,
     m: MultiProgress,
@@ -129,24 +129,24 @@ impl StateSnapshotReaderV1 {
             })
             .collect();
 
-        // let progress_bar = m.add(
-        //     ProgressBar::new(files.len() as u64).with_style(
-        //         ProgressStyle::with_template(
-        //             "[{elapsed_precise}] {wide_bar} {pos} out of {len} .ref files done\n({msg})",
-        //         )
-        //         .unwrap(),
-        //     ),
-        // );
-        // copy_files(
-        //     &files,
-        //     &files,
-        //     remote_object_store.clone(),
-        //     local_object_store.clone(),
-        //     download_concurrency,
-        //     Some(progress_bar.clone()),
-        // )
-        // .await?;
-        // progress_bar.finish_with_message("ref files download complete");
+        let progress_bar = m.add(
+            ProgressBar::new(files.len() as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} .ref files done\n({msg})",
+                )
+                .unwrap(),
+            ),
+        );
+        copy_files(
+            &files,
+            &files,
+            remote_object_store.clone(),
+            local_object_store.clone(),
+            download_concurrency,
+            Some(progress_bar.clone()),
+        )
+        .await?;
+        progress_bar.finish_with_message("ref files download complete");
         Ok(StateSnapshotReaderV1 {
             epoch,
             local_staging_dir_root,
@@ -175,67 +175,130 @@ impl StateSnapshotReaderV1 {
             Arc::new(Mutex::new(BTreeMap::new()));
         let mut accumulator = Accumulator::default();
 
-        info!("Computing sha3 digests and accumulator");
-        // let mut instant = Instant::now();
-        // let num_part_files = self
-        //     .ref_files
-        //     .iter()
-        //     .map(|(_bucket, part_files)| part_files.len())
-        //     .sum::<usize>();
-        // let accum_progress_bar = self.m.add(
-        //     ProgressBar::new(num_part_files as u64).with_style(
-        //         ProgressStyle::with_template(
-        //             "[{elapsed_precise}] {wide_bar} {pos} out of {len} ref files accumulated ({msg})",
-        //         )
-        //         .unwrap(),
-        //     ),
-        // );
+        let mut instant = Instant::now();
+        let num_part_files = self
+            .ref_files
+            .iter()
+            .map(|(_bucket, part_files)| part_files.len())
+            .sum::<usize>();
 
-        // info!("TESTING -- before accumulation");
-        // for (bucket, part_files) in self.ref_files.clone().iter() {
-        //     for (part, part_file) in part_files.iter() {
-        //         info!("TESTING -- (1)");
-        //         let mut sha3_digests = sha3_digests.lock().await;
-        //         info!("TESTING -- (1.2)");
-        //         let ref_iter = self.ref_iter(*bucket, *part)?;
-        //         info!("TESTING -- (1.3)");
-        //         let mut hasher = Sha3_256::default();
-        //         info!("TESTING -- (1.4)");
-        //         let mut empty = true;
-        //         info!("TESTING -- (1.5)");
-        //         self.object_files
-        //             .get(bucket)
-        //             .context(format!("No bucket exists for: {bucket}"))?
-        //             .get(part)
-        //             .context(format!("No part exists for bucket: {bucket}, part: {part}"))?;
-        //         info!("TESTING -- (2)");
-        //         for object_ref in ref_iter {
-        //             hasher.update(object_ref.2.inner());
-        //             accumulator.insert(object_ref.2);
-        //         }
-        //         info!("TESTING -- (3)");
-        //         if !empty {
-        //             sha3_digests
-        //                 .entry(*bucket)
-        //                 .or_insert(BTreeMap::new())
-        //                 .entry(*part)
-        //                 .or_insert(hasher.finalize().digest);
-        //         }
-        //         info!("TESTING -- (4)");
-        //         accum_progress_bar.inc(1);
-        //         accum_progress_bar.set_message(format!("Bucket: {}, Part: {}", bucket, part));
-        //         instant = Instant::now();
-        //         empty = false;
-        //     }
-        // }
-        // info!("TESTING -- after accumulation");
-        // accum_progress_bar.finish_with_message("Accumulation complete");
-
-        if let Some(sender) = sender {
-            if let Err(_) = sender.send(accumulator) {
-                panic!("Unable to send accumulator from snapshot reader")
+        // Generate checksums
+        info!("Computing checksums");
+        let checksum_progress_bar = self.m.add(
+            ProgressBar::new(num_part_files as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} ref files checksummed ({msg})",
+                )
+                .unwrap(),
+            ),
+        );
+        info!("TESTING -- before checksum");
+        for (bucket, part_files) in self.ref_files.clone().iter() {
+            for (part, part_file) in part_files.iter() {
+                info!("TESTING -- (1)");
+                let mut sha3_digests = sha3_digests.lock().await;
+                info!("TESTING -- (1.2)");
+                let ref_iter = self.ref_iter(*bucket, *part)?;
+                info!("TESTING -- (1.3)");
+                let mut hasher = Sha3_256::default();
+                info!("TESTING -- (1.4)");
+                let mut empty = true;
+                info!("TESTING -- (1.5)");
+                self.object_files
+                    .get(bucket)
+                    .context(format!("No bucket exists for: {bucket}"))?
+                    .get(part)
+                    .context(format!("No part exists for bucket: {bucket}, part: {part}"))?;
+                info!("TESTING -- (2)");
+                for object_ref in ref_iter {
+                    hasher.update(object_ref.2.inner());
+                    empty = false;
+                }
+                info!("TESTING -- (3)");
+                if !empty {
+                    sha3_digests
+                        .entry(*bucket)
+                        .or_insert(BTreeMap::new())
+                        .entry(*part)
+                        .or_insert(hasher.finalize().digest);
+                }
+                info!("TESTING -- (4)");
+                checksum_progress_bar.inc(1);
+                checksum_progress_bar.set_message(format!("Bucket: {}, Part: {}", bucket, part));
+                instant = Instant::now();
             }
         }
+        info!("TESTING -- after hashing");
+        checksum_progress_bar.finish_with_message("Checksumming complete");
+
+        // Spawn accumulation task
+        info!("Accumulating ref files for verification");
+        let accum_progress_bar = self.m.add(
+            ProgressBar::new(num_part_files as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} ref files accumulated ({msg})",
+                )
+                .unwrap(),
+            ),
+        );
+        let object_files = self.object_files.clone();
+        let ref_files = self.ref_files.clone();
+        let epoch_dir = self.epoch_dir().clone();
+        let local_staging_dir_root = self.local_staging_dir_root.clone();
+        let accum_handle = if let Some(sender) = sender {
+            let handle = tokio::spawn(async move {
+                info!("TESTING -- before accumulation");
+                let local_staging_dir_root_clone = local_staging_dir_root.clone();
+                let epoch_dir_clone = epoch_dir.clone();
+                for (bucket, part_files) in ref_files.clone().iter() {
+                    for (part, part_file) in part_files.iter() {
+                        info!("TESTING -- (5)");
+                        let ref_iter = {
+                            let file_metadata = ref_files
+                                .get(&bucket)
+                                .expect("No ref files found for bucket: {bucket_num}")
+                                .get(&part)
+                                .expect(
+                                    "No ref files found for bucket: {bucket_num}, part: {part_num}",
+                                );
+                            ObjectRefIter::new(
+                                file_metadata,
+                                local_staging_dir_root_clone.clone(),
+                                epoch_dir_clone.clone(),
+                            )
+                            .expect("Failed to create object ref iter")
+                        };
+                        info!("TESTING -- (5.2)");
+                        let mut empty = true;
+                        info!("TESTING -- (5.3)");
+                        object_files
+                            .get(bucket)
+                            .expect("No bucket exists for: {bucket}")
+                            .get(part)
+                            .expect("No part exists for bucket: {bucket}, part: {part}");
+                        info!("TESTING -- (6)");
+                        for object_ref in ref_iter {
+                            accumulator.insert(object_ref.2);
+                            empty = false;
+                        }
+                        info!("TESTING -- (7)");
+                        accum_progress_bar.inc(1);
+                        accum_progress_bar
+                            .set_message(format!("Bucket: {}, Part: {}", bucket, part));
+                        instant = Instant::now();
+                    }
+                }
+                if let Err(_) = sender.send(accumulator) {
+                    panic!("Unable to send accumulator from snapshot reader");
+                }
+
+                info!("TESTING -- after accumulation");
+                accum_progress_bar.finish_with_message("Accumulation complete");
+            });
+            Some(handle)
+        } else {
+            None
+        };
 
         let input_files: Vec<_> = self
             .object_files
@@ -280,15 +343,10 @@ impl StateSnapshotReaderV1 {
                             let bytes = remote_object_store
                                 .get(&file_path)
                                 .await
-                                .map_err(|e| {
-                                    info!(
-                                        "TESTING -- failed to download obj file {}: {}",
-                                        file_path, e
-                                    );
-                                    anyhow!("Failed to download file: {e}")
-                                })?
+                                .expect("Failed to download obj file")
                                 .bytes()
-                                .await?;
+                                .await
+                                .expect("Failed to get bytes from obj file");
                             info!(
                                 "TESTING -- obj file {} has {} bytes",
                                 file_metadata.file_path(&epoch_dir),
@@ -296,14 +354,20 @@ impl StateSnapshotReaderV1 {
                             );
                             let sha3_digest = sha3_digests_cloned.lock().await;
                             info!("TESTING -- aquired the sha3_digest lock");
-                            // TODO(william) uncomment
-                            // let bucket_map = sha3_digest.get(bucket).context("Missing bucket")?;
-                            // let sha3_digest = bucket_map.get(part_num).context("Missing part")?;
+
+                            let bucket_map =
+                                sha3_digest.get(bucket).expect("Bucket not in digest map");
+
+                            info!("TESTING -- got bucket_map. Size: {}", bucket_map.len());
+                            let sha3_digest = bucket_map
+                                .get(part_num)
+                                .expect("sha3 digest not in bucket map");
+
+                            info!("TESTING -- got sha3_digest");
                             Ok::<(Bytes, FileMetadata, [u8; 32]), anyhow::Error>((
                                 bytes,
                                 (*file_metadata).clone(),
-                                // *sha3_digest,
-                                [0; 32],
+                                *sha3_digest,
                             ))
                         }
                     })
@@ -328,7 +392,9 @@ impl StateSnapshotReaderV1 {
                                     obj_iter,
                                     indirect_objects_threshold,
                                     &sha3_digest,
-                                )?;
+                                )
+                                .expect("Failed to insert live objects");
+
                                 info!(
                                     "TESTING -- finished bulk insert live objects for obj file {}",
                                     file_metadata.file_path(&epoch_dir)
@@ -354,8 +420,9 @@ impl StateSnapshotReaderV1 {
         )
         .await?;
 
-        // TODO(william) for testing only - sleep for 5 minutes for all downloads to complete
-        tokio::time::sleep(Duration::from_secs(300)).await;
+        if let Some(handle) = accum_handle {
+            handle.await?;
+        }
 
         obj_progress_bar.finish_with_message("Objects download complete");
         ret

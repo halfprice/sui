@@ -630,6 +630,7 @@ pub async fn restore_from_db_checkpoint(
 }
 
 fn start_summary_sync(
+    perpetual_db: Arc<AuthorityPerpetualTables>,
     m: MultiProgress,
     path: PathBuf,
     genesis_path: PathBuf,
@@ -643,12 +644,11 @@ fn start_summary_sync(
         let genesis = Genesis::load(genesis_path).unwrap();
         let genesis_committee = genesis.committee()?;
         let checkpoint_store = Arc::new(CheckpointStore::open_tables_read_write(
-            path.join(format!("epoch_{}", epoch)).join("checkpoints"),
+            path.join("checkpoints"),
             MetricConf::default(),
             None,
             None,
         ));
-        let perpetual_db = Arc::new(AuthorityPerpetualTables::open(&path.join("store"), None));
         let committee_store = Arc::new(CommitteeStore::new(
             path.join("epochs"),
             &genesis_committee,
@@ -742,6 +742,8 @@ fn start_summary_sync(
     })
 }
 
+// TODO this is better implemented as an execution DAG. Will improve readability
+// as well as efficiency (by ensuring max parallelism)
 pub async fn download_formal_snapshot(
     path: &Path,
     epoch: EpochId,
@@ -755,9 +757,11 @@ pub async fn download_formal_snapshot(
     let m = MultiProgress::new();
     let genesis = genesis.to_path_buf();
     let highest_pruned_checkpoint = Arc::new(AtomicU64::new(0));
+    let perpetual_db = Arc::new(AuthorityPerpetualTables::open(&path.join("store"), None));
 
     info!("TESTING -- before starting summary sync task");
     let summaries_handle = start_summary_sync(
+        perpetual_db.clone(),
         m.clone(),
         path.clone(),
         genesis.clone(),
@@ -770,21 +774,22 @@ pub async fn download_formal_snapshot(
 
     let (_abort_handle, abort_registration) = AbortHandle::new_pair();
     let path_clone = path.clone();
-    let (sender, receiver) = oneshot::channel();
+
+    let perpetual_db_clone = perpetual_db.clone();
 
     info!("TESTING -- before starting reader.read task");
+
+    let snapshot_dir = path.parent().unwrap().join("snapshot");
+    let snapshot_dir_clone = snapshot_dir.clone();
+
+    let (sender, receiver) = oneshot::channel();
+
     let snapshot_handle = tokio::spawn(async move {
-        let mut path = path_clone.clone();
         let local_store_config = ObjectStoreConfig {
             object_store: Some(ObjectStoreType::File),
-            directory: Some(path.join("snapshots").to_path_buf()),
+            directory: Some(snapshot_dir_clone.to_path_buf()),
             ..Default::default()
         };
-
-        let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
-            &path.join(format!("epoch_{}", epoch)).join("store"),
-            None,
-        ));
 
         info!("TESTING -- before reader constructor (fetching refs)");
         let mut reader = StateSnapshotReaderV1::new(
@@ -795,13 +800,15 @@ pub async fn download_formal_snapshot(
             NonZeroUsize::new(num_parallel_downloads).unwrap(),
             m,
         )
-        .await?;
+        .await
+        .unwrap_or_else(|err| panic!("Failed to create reader: {}", err));
         info!("TESTING -- after reader constructor (done fetching refs)");
 
         info!("TESTING -- before reader.read");
         reader
-            .read(&perpetual_db, abort_registration, Some(sender))
-            .await?;
+            .read(&perpetual_db_clone, abort_registration, Some(sender))
+            .await
+            .unwrap_or_else(|err| panic!("Failed during read: {}", err));
         info!("TESTING -- after reader.read");
         Ok::<(), anyhow::Error>(())
     });
@@ -809,21 +816,16 @@ pub async fn download_formal_snapshot(
 
     info!("TESTING -- awaiting accumuator receiver");
 
-    // sleep 2 seconds to allow the reader to start
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // TODO perform verification
     let accumulator = receiver.await?;
     info!("TESTING -- accumuator received!");
-    // TODO perform verification
 
-    let tasks: Vec<_> = vec![Box::pin(snapshot_handle), Box::pin(summaries_handle)];
+    let tasks: Vec<_> = vec![Box::pin(summaries_handle), Box::pin(snapshot_handle)];
     info!("TESTING -- about to await all tasks!");
+
     join_all(tasks).await;
     info!("TESTING -- done awaiting all tasks!");
 
-    let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
-        &path.join(format!("epoch_{}", epoch)).join("store"),
-        None,
-    ));
     let highest_pruned_checkpoint = highest_pruned_checkpoint.load(Ordering::Relaxed);
     if highest_pruned_checkpoint > 0 {
         perpetual_db.set_highest_pruned_checkpoint_without_wb(highest_pruned_checkpoint)?;
@@ -831,7 +833,6 @@ pub async fn download_formal_snapshot(
 
     let system_state_object = get_sui_system_state(&perpetual_db)?;
     let new_epoch_start_state = system_state_object.into_epoch_start_state();
-    // let next_epoch_committee = new_epoch_start_state.get_sui_committee();
     let checkpoint_store = Arc::new(CheckpointStore::open_tables_read_write(
         path.join("checkpoints"),
         MetricConf::default(),
@@ -849,11 +850,13 @@ pub async fn download_formal_snapshot(
         .set_epoch_start_configuration(&epoch_start_configuration)
         .await?;
 
-    let new_path = path
-        .parent()
-        .expect("Root is not a valid path")
-        .join("live");
+    let new_path = path.parent().unwrap().join("live");
     fs::rename(&path, &new_path)?;
+    fs::remove_dir_all(snapshot_dir)?;
+    info!(
+        "Successfully restored state from snapshot at end of epoch {}",
+        epoch
+    );
 
     Ok(())
 }
@@ -981,8 +984,14 @@ pub async fn download_db_snapshot(
     let path = path.to_path_buf();
     let genesis = genesis.to_path_buf();
     let highest_pruned_checkpoint = Arc::new(AtomicU64::new(0));
+    let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
+        &path.join(format!("epoch_{}", epoch)).join("store"),
+        None,
+    ));
     let summaries_handle = if skip_checkpoints {
+        let perpetual_db = Arc::new(AuthorityPerpetualTables::open(&path.join("store"), None));
         Some(start_summary_sync(
+            perpetual_db.clone(),
             m.clone(),
             path.clone(),
             genesis.clone(),
@@ -1054,10 +1063,6 @@ pub async fn download_db_snapshot(
         tasks.push(Box::pin(summary_handle));
     }
     join_all(tasks).await;
-    let perpetual_db = Arc::new(AuthorityPerpetualTables::open(
-        &path.join(format!("epoch_{}", epoch)).join("store"),
-        None,
-    ));
     let highest_pruned_checkpoint = highest_pruned_checkpoint.load(Ordering::Relaxed);
     if highest_pruned_checkpoint > 0 {
         perpetual_db.set_highest_pruned_checkpoint_without_wb(highest_pruned_checkpoint)?;
