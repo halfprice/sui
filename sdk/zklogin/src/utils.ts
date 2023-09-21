@@ -14,6 +14,14 @@ export function toBufferBE(num: bigint, width: number) {
 	return Buffer.from(hex.padStart(width * 2, '0').slice(-width * 2), 'hex');
 }
 
+export function toBigIntBE(buffer: Buffer) {
+	const hex = buffer.toString('hex');
+	if (hex.length === 0) {
+		return BigInt(0);
+	}
+	return BigInt(`0x${hex}`);
+}
+
 /**
  * Splits an array into chunks of size chunk_size. If the array is not evenly
  * divisible by chunk_size, the first chunk will be smaller than chunk_size.
