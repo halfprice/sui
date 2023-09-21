@@ -32,6 +32,7 @@ use sui_storage::object_store::ObjectStoreConfig;
 use sui_types::accumulator::Accumulator;
 use sui_types::base_types::{ObjectDigest, ObjectID, ObjectRef, SequenceNumber};
 use tokio::sync::Mutex;
+use tokio::time::Duration;
 use tokio::time::Instant;
 use tracing::info;
 
@@ -128,24 +129,24 @@ impl StateSnapshotReaderV1 {
             })
             .collect();
 
-        let progress_bar = m.add(
-            ProgressBar::new(files.len() as u64).with_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} .ref files done\n({msg})",
-                )
-                .unwrap(),
-            ),
-        );
-        copy_files(
-            &files,
-            &files,
-            remote_object_store.clone(),
-            local_object_store.clone(),
-            download_concurrency,
-            Some(progress_bar.clone()),
-        )
-        .await?;
-        progress_bar.finish_with_message("ref files download complete");
+        // let progress_bar = m.add(
+        //     ProgressBar::new(files.len() as u64).with_style(
+        //         ProgressStyle::with_template(
+        //             "[{elapsed_precise}] {wide_bar} {pos} out of {len} .ref files done\n({msg})",
+        //         )
+        //         .unwrap(),
+        //     ),
+        // );
+        // copy_files(
+        //     &files,
+        //     &files,
+        //     remote_object_store.clone(),
+        //     local_object_store.clone(),
+        //     download_concurrency,
+        //     Some(progress_bar.clone()),
+        // )
+        // .await?;
+        // progress_bar.finish_with_message("ref files download complete");
         Ok(StateSnapshotReaderV1 {
             epoch,
             local_staging_dir_root,
@@ -175,49 +176,60 @@ impl StateSnapshotReaderV1 {
         let mut accumulator = Accumulator::default();
 
         info!("Computing sha3 digests and accumulator");
-        let mut instant = Instant::now();
-        let num_part_files = self
-            .ref_files
-            .iter()
-            .map(|(_bucket, part_files)| part_files.len())
-            .sum::<usize>();
-        let accum_progress_bar = self.m.add(
-            ProgressBar::new(num_part_files as u64).with_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {wide_bar} {pos} out of {len} ref files accumulated ({msg})",
-                )
-                .unwrap(),
-            ),
-        );
-        for (bucket, part_files) in self.ref_files.clone().iter() {
-            for (part, part_file) in part_files.iter() {
-                let mut sha3_digests = sha3_digests.lock().await;
-                let ref_iter = self.ref_iter(*bucket, *part)?;
-                let mut hasher = Sha3_256::default();
-                let mut empty = true;
-                self.object_files
-                    .get(bucket)
-                    .context(format!("No bucket exists for: {bucket}"))?
-                    .get(part)
-                    .context(format!("No part exists for bucket: {bucket}, part: {part}"))?;
-                for object_ref in ref_iter {
-                    hasher.update(object_ref.2.inner());
-                    accumulator.insert(object_ref.2);
-                }
-                if !empty {
-                    sha3_digests
-                        .entry(*bucket)
-                        .or_insert(BTreeMap::new())
-                        .entry(*part)
-                        .or_insert(hasher.finalize().digest);
-                }
-                accum_progress_bar.inc(1);
-                accum_progress_bar.set_message(format!("Bucket: {}, Part: {}", bucket, part));
-                instant = Instant::now();
-                empty = false;
-            }
-        }
-        accum_progress_bar.finish_with_message("Accumulation complete");
+        // let mut instant = Instant::now();
+        // let num_part_files = self
+        //     .ref_files
+        //     .iter()
+        //     .map(|(_bucket, part_files)| part_files.len())
+        //     .sum::<usize>();
+        // let accum_progress_bar = self.m.add(
+        //     ProgressBar::new(num_part_files as u64).with_style(
+        //         ProgressStyle::with_template(
+        //             "[{elapsed_precise}] {wide_bar} {pos} out of {len} ref files accumulated ({msg})",
+        //         )
+        //         .unwrap(),
+        //     ),
+        // );
+
+        // info!("TESTING -- before accumulation");
+        // for (bucket, part_files) in self.ref_files.clone().iter() {
+        //     for (part, part_file) in part_files.iter() {
+        //         info!("TESTING -- (1)");
+        //         let mut sha3_digests = sha3_digests.lock().await;
+        //         info!("TESTING -- (1.2)");
+        //         let ref_iter = self.ref_iter(*bucket, *part)?;
+        //         info!("TESTING -- (1.3)");
+        //         let mut hasher = Sha3_256::default();
+        //         info!("TESTING -- (1.4)");
+        //         let mut empty = true;
+        //         info!("TESTING -- (1.5)");
+        //         self.object_files
+        //             .get(bucket)
+        //             .context(format!("No bucket exists for: {bucket}"))?
+        //             .get(part)
+        //             .context(format!("No part exists for bucket: {bucket}, part: {part}"))?;
+        //         info!("TESTING -- (2)");
+        //         for object_ref in ref_iter {
+        //             hasher.update(object_ref.2.inner());
+        //             accumulator.insert(object_ref.2);
+        //         }
+        //         info!("TESTING -- (3)");
+        //         if !empty {
+        //             sha3_digests
+        //                 .entry(*bucket)
+        //                 .or_insert(BTreeMap::new())
+        //                 .entry(*part)
+        //                 .or_insert(hasher.finalize().digest);
+        //         }
+        //         info!("TESTING -- (4)");
+        //         accum_progress_bar.inc(1);
+        //         accum_progress_bar.set_message(format!("Bucket: {}, Part: {}", bucket, part));
+        //         instant = Instant::now();
+        //         empty = false;
+        //     }
+        // }
+        // info!("TESTING -- after accumulation");
+        // accum_progress_bar.finish_with_message("Accumulation complete");
 
         if let Some(sender) = sender {
             if let Err(_) = sender.send(accumulator) {
@@ -233,6 +245,7 @@ impl StateSnapshotReaderV1 {
                 vec
             })
             .collect();
+        info!("TESTING -- input files len: {}", input_files.len());
         let epoch_dir = self.epoch_dir();
         let remote_object_store = self.remote_object_store.clone();
         let indirect_objects_threshold = self.indirect_objects_threshold;
@@ -249,6 +262,8 @@ impl StateSnapshotReaderV1 {
         let downloaded_bytes = AtomicUsize::new(0);
         let file_counter = Arc::new(AtomicUsize::new(0));
         let mut instant = Instant::now();
+
+        info!("TESTING -- about to enter futures stream");
         let ret = Abortable::new(
             async move {
                 futures::stream::iter(input_files.iter())
@@ -258,36 +273,66 @@ impl StateSnapshotReaderV1 {
                         let remote_object_store = remote_object_store.clone();
                         let sha3_digests_cloned = sha3_digests.clone();
                         async move {
+                            info!(
+                                "TESTING -- Downloading obj file {}",
+                                file_metadata.file_path(&epoch_dir)
+                            );
                             let bytes = remote_object_store
                                 .get(&file_path)
                                 .await
-                                .map_err(|e| anyhow!("Failed to download file: {e}"))?
+                                .map_err(|e| {
+                                    info!(
+                                        "TESTING -- failed to download obj file {}: {}",
+                                        file_path, e
+                                    );
+                                    anyhow!("Failed to download file: {e}")
+                                })?
                                 .bytes()
                                 .await?;
+                            info!(
+                                "TESTING -- obj file {} has {} bytes",
+                                file_metadata.file_path(&epoch_dir),
+                                bytes.len(),
+                            );
                             let sha3_digest = sha3_digests_cloned.lock().await;
-                            let bucket_map = sha3_digest.get(bucket).context("Missing bucket")?;
-                            let sha3_digest = bucket_map.get(part_num).context("Missing part")?;
+                            info!("TESTING -- aquired the sha3_digest lock");
+                            // TODO(william) uncomment
+                            // let bucket_map = sha3_digest.get(bucket).context("Missing bucket")?;
+                            // let sha3_digest = bucket_map.get(part_num).context("Missing part")?;
                             Ok::<(Bytes, FileMetadata, [u8; 32]), anyhow::Error>((
                                 bytes,
                                 (*file_metadata).clone(),
-                                *sha3_digest,
+                                // *sha3_digest,
+                                [0; 32],
                             ))
                         }
                     })
                     .boxed()
                     .buffer_unordered(download_concurrency)
                     .try_for_each(|(bytes, file_metadata, sha3_digest)| {
+                        info!(
+                            "TESTING -- handling obj file {}",
+                            file_metadata.file_path(&epoch_dir),
+                        );
                         let epoch_dir = epoch_dir.clone();
                         let path = file_metadata.file_path(&epoch_dir);
                         let bytes_len = bytes.len();
                         let result: Result<(), anyhow::Error> =
                             LiveObjectIter::new(&file_metadata, bytes).and_then(|obj_iter| {
+                                info!(
+                                    "TESTING -- about to bulk insert live objects for obj file {}",
+                                    file_metadata.file_path(&epoch_dir)
+                                );
                                 AuthorityStore::bulk_insert_live_objects(
                                     perpetual_db,
                                     obj_iter,
                                     indirect_objects_threshold,
                                     &sha3_digest,
                                 )?;
+                                info!(
+                                    "TESTING -- finished bulk insert live objects for obj file {}",
+                                    file_metadata.file_path(&epoch_dir)
+                                );
                                 Ok::<(), anyhow::Error>(())
                             });
                         file_counter.fetch_sub(1, Ordering::Relaxed);
@@ -308,6 +353,10 @@ impl StateSnapshotReaderV1 {
             abort_registration,
         )
         .await?;
+
+        // TODO(william) for testing only - sleep for 5 minutes for all downloads to complete
+        tokio::time::sleep(Duration::from_secs(300)).await;
+
         obj_progress_bar.finish_with_message("Objects download complete");
         ret
     }
@@ -419,8 +468,9 @@ pub struct LiveObjectIter {
 
 impl LiveObjectIter {
     pub fn new(file_metadata: &FileMetadata, bytes: Bytes) -> Result<Self> {
-        info!("TESTING -- bytes len: {}", bytes.len());
+        info!("TESTING -- about to decompress {} bytes", bytes.len());
         let mut reader = file_metadata.file_compression.bytes_decompress(bytes)?;
+        info!("TESTING -- finished decompression");
         let magic = reader.read_u32::<BigEndian>()?;
         if magic != OBJECT_FILE_MAGIC {
             Err(anyhow!(

@@ -808,6 +808,9 @@ pub async fn download_formal_snapshot(
     info!("TESTING -- after starting reader.read task");
 
     info!("TESTING -- awaiting accumuator receiver");
+
+    // sleep 2 seconds to allow the reader to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let accumulator = receiver.await?;
     info!("TESTING -- accumuator received!");
     // TODO perform verification
