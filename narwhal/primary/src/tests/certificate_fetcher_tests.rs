@@ -463,7 +463,7 @@ async fn fetch_certificates_v1_basic() {
     // Send out a batch of certificate V2s.
     let mut certs = Vec::new();
     for cert in certificates.iter().skip(num_written).take(8) {
-        certs.push(fixture.certificate(&latest_protocol_version(), &cert.header()));
+        certs.push(fixture.certificate(&latest_protocol_version(), cert.header()));
     }
     tx_fetch_resp
         .try_send(FetchCertificatesResponse {
@@ -779,7 +779,7 @@ async fn fetch_certificates_v2_basic() {
     // Send out a batch of certificate V1s.
     let mut certs = Vec::new();
     for cert in certificates.iter().skip(num_written).take(204) {
-        certs.push(fixture.certificate(&get_protocol_config(25), &cert.header()));
+        certs.push(fixture.certificate(&get_protocol_config(25), cert.header()));
     }
     tx_fetch_resp
         .try_send(FetchCertificatesResponse {

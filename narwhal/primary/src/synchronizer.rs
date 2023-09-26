@@ -168,19 +168,19 @@ impl Inner {
             }
         }
 
-        if self.protocol_config.narwhal_certificate_v2() {
-            if !matches!(
+        if self.protocol_config.narwhal_certificate_v2()
+            && !matches!(
                 certificate.aggregate_signature_verification_state(),
                 AggregateSignatureVerificationState::VerifiedDirectly(_)
                     | AggregateSignatureVerificationState::VerifiedIndirectly(_)
                     | AggregateSignatureVerificationState::Genesis(_)
-            ) {
-                panic!(
-                    "Attempting to write cert {:?} with invalid signature state {:?} to store",
-                    certificate.digest(),
-                    certificate.aggregate_signature_verification_state()
-                );
-            }
+            )
+        {
+            panic!(
+                "Attempting to write cert {:?} with invalid signature state {:?} to store",
+                certificate.digest(),
+                certificate.aggregate_signature_verification_state()
+            );
         }
 
         // Store the certificate and make it available as parent to other certificates.
@@ -359,7 +359,7 @@ impl Synchronizer {
         let inner = Arc::new(Inner {
             authority_id,
             committee: committee.clone(),
-            protocol_config: protocol_config.clone(),
+            protocol_config,
             worker_cache,
             gc_depth,
             gc_round: AtomicU64::new(gc_round),
@@ -680,17 +680,15 @@ impl Synchronizer {
             certificate
                 .verify(&self.inner.committee, &self.inner.worker_cache)
                 .map_err(DagError::from)?;
+        } else if self.inner.protocol_config.narwhal_certificate_v2() {
+            certificate.set_aggregate_signature_verification_state(
+                AggregateSignatureVerificationState::VerifiedIndirectly(
+                    certificate.aggregated_signature().clone(),
+                ),
+            );
         } else {
-            if self.inner.protocol_config.narwhal_certificate_v2() {
-                certificate.set_aggregate_signature_verification_state(
-                    AggregateSignatureVerificationState::VerifiedIndirectly(
-                        certificate.aggregated_signature().clone(),
-                    ),
-                );
-            } else {
-                error!("CertificateV2 is not enabled but an attempt to verify certificate indirectly was made.");
-                bail!(DagError::Canceled);
-            }
+            error!("CertificateV2 is not enabled but an attempt to verify certificate indirectly was made.");
+            bail!(DagError::Canceled);
         }
 
         Ok(())

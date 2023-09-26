@@ -547,7 +547,7 @@ async fn process_certificates_v2_helper(
         })?;
 
         for parent_digest in cert.header().parents() {
-            all_parents.insert(parent_digest.clone());
+            all_parents.insert(*parent_digest);
         }
     }
 
