@@ -656,7 +656,7 @@ pub struct OverloadThresholdConfig {
 impl Default for OverloadThresholdConfig {
     fn default() -> Self {
         Self {
-            max_txn_age_in_queue: Duration::from_secs(60), // 1 minute
+            max_txn_age_in_queue: Duration::from_secs(1), // 1 second
         }
     }
 }

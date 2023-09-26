@@ -836,7 +836,8 @@ impl TransactionManager {
     pub(crate) fn objects_queue_len_and_age(
         &self,
         keys: Vec<ObjectID>,
-    ) -> Vec<(ObjectID, usize, Option<Duration>)> {
+    // ) -> Vec<(ObjectID, usize, Option<Duration>)> {
+    ) -> Vec<(ObjectID, usize, Vec<Duration>)> {
         let inner = self.inner.read();
         keys.into_iter()
             .map(|key| {
@@ -845,7 +846,7 @@ impl TransactionManager {
                 (
                     key,
                     txns.len(),
-                    txns.first().map(|(_, time)| time.elapsed()),
+                    txns.to_owned().into_iter().map(|(_, time)| time.elapsed()).collect(),
                 )
             })
             .collect()
