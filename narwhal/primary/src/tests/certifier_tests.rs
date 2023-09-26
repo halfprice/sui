@@ -13,6 +13,7 @@ use primary::NUM_SHUTDOWN_RECEIVERS;
 use prometheus::Registry;
 use rand::{rngs::StdRng, SeedableRng};
 use std::num::NonZeroUsize;
+use test_utils::latest_protocol_version;
 use test_utils::CommitteeFixture;
 use test_utils::{get_protocol_config, latest_protocol_version};
 use tokio::sync::watch;
