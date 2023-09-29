@@ -33,7 +33,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 use tracing::{debug, error, instrument, trace, warn};
-use types::{bail, AggregateSignatureVerificationState};
+use types::AggregateSignatureVerificationState;
 use types::{
     ensure,
     error::{AcceptNotification, DagError, DagResult},
@@ -652,15 +652,8 @@ impl Synchronizer {
     }
 
     /// Checks if the certificate is valid and can potentially be accepted into the DAG.
-    /// The param verified_indirectly should only be set to true when CertificateV2 is
-    /// being used by the network and we can indirectly verify a certificate by verifying
-    /// the signatures of the tip of the certificate chain that the certficate is a parent to.
     // TODO: produce a different type after sanitize, e.g. VerifiedCertificate.
-    pub fn sanitize_certificate(
-        &self,
-        certificate: &mut Certificate,
-        verified_indirectly: bool,
-    ) -> DagResult<()> {
+    pub fn sanitize_certificate(&self, certificate: &mut Certificate) -> DagResult<()> {
         ensure!(
             self.inner.committee.epoch() == certificate.epoch(),
             DagError::InvalidEpoch {
@@ -675,21 +668,9 @@ impl Synchronizer {
             DagError::TooOld(certificate.digest().into(), certificate.round(), gc_round)
         );
 
-        if !verified_indirectly {
-            // Verify the certificate (and the embedded header).
-            certificate
-                .verify(&self.inner.committee, &self.inner.worker_cache)
-                .map_err(DagError::from)?;
-        } else if self.inner.protocol_config.narwhal_certificate_v2() {
-            certificate.set_aggregate_signature_verification_state(
-                AggregateSignatureVerificationState::VerifiedIndirectly(
-                    certificate.aggregated_signature().clone(),
-                ),
-            );
-        } else {
-            error!("CertificateV2 is not enabled but an attempt to verify certificate indirectly was made.");
-            bail!(DagError::Canceled);
-        }
+        certificate
+            .verify(&self.inner.committee, &self.inner.worker_cache)
+            .map_err(DagError::from)?;
 
         Ok(())
     }
@@ -722,7 +703,7 @@ impl Synchronizer {
             }
         }
         if sanitize {
-            self.sanitize_certificate(&mut certificate, false)?;
+            self.sanitize_certificate(&mut certificate)?;
         }
 
         debug!(
