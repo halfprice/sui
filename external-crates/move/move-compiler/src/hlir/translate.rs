@@ -84,6 +84,8 @@ struct Context<'env> {
     function_locals: UniqueMap<H::Var, H::SingleType>,
     signature: Option<H::FunctionSignature>,
     tmp_counter: usize,
+    named_block_binders: UniqueMap<H::Var, Vec<H::LValue>>,
+    named_block_types: UniqueMap<H::Var, H::Type>,
     /// collects all struct fields used in the current module
     pub used_fields: BTreeMap<Symbol, BTreeSet<Symbol>>,
 }
@@ -131,6 +133,8 @@ impl<'env> Context<'env> {
             signature: None,
             tmp_counter: 0,
             used_fields: BTreeMap::new(),
+            named_block_binders: UniqueMap::new(),
+            named_block_types: UniqueMap::new(),
         }
     }
 
@@ -155,6 +159,28 @@ impl<'env> Context<'env> {
         self.function_locals.add(symbol, t).unwrap();
     }
 
+    pub fn record_named_block_binders(&mut self, block_name: H::Var, binders: Vec<H::LValue>) {
+        let _ = self
+            .named_block_binders
+            .add(block_name, binders)
+            .expect("ICE reused block name");
+    }
+
+    pub fn record_named_block_type(&mut self, block_name: H::Var, ty: H::Type) {
+        self.named_block_types.add(block_name, ty);
+    }
+
+    pub fn lookup_named_block_binders(&mut self, block_name: &H::Var) -> Vec<H::LValue> {
+        self.named_block_binders
+            .get(block_name)
+            .expect("ICE named block with no binders")
+            .clone()
+    }
+
+    pub fn lookup_named_block_type(&mut self, block_name: &H::Var) -> Option<H::Type> {
+        self.named_block_types.get(block_name).cloned()
+    }
+
     pub fn fields(
         &self,
         module: &ModuleIdent,
@@ -173,6 +199,12 @@ impl<'env> Context<'env> {
     fn counter_next(&mut self) -> usize {
         self.tmp_counter += 1;
         self.tmp_counter
+    }
+
+    fn exit_function(&mut self) {
+        self.signature = None;
+        self.named_block_binders = UniqueMap::new();
+        self.named_block_types = UniqueMap::new();
     }
 }
 
@@ -388,7 +420,7 @@ fn function_body_defined(
         crate::shared::ast_debug::print_verbose(&body);
         println!("--------------------------------------------------");
     }
-    context.signature = None;
+    context.exit_function();
     (locals, body)
 }
 
@@ -620,14 +652,14 @@ fn divergent(stmt_: &H::Statement_) -> bool {
     fn divergent_block(block: &Block) -> bool {
         matches!(
             block.back(),
-            Some(h_stmt_cmd!(C::Break))
-                | Some(h_stmt_cmd!(C::Continue))
+            Some(h_stmt_cmd!(C::Break(_)))
+                | Some(h_stmt_cmd!(C::Continue(_)))
                 | Some(h_stmt_cmd!(C::Abort(_)))
                 | Some(h_stmt_cmd!(C::Return { .. }))
         )
     }
 
-    let result = match stmt_ {
+    match stmt_ {
         S::IfElse {
             if_block,
             else_block,
@@ -639,12 +671,13 @@ fn divergent(stmt_: &H::Statement_) -> bool {
 
         S::Loop { has_break, .. } => !has_break,
 
-        hcmd!(C::Break) | hcmd!(C::Continue) | hcmd!(C::Abort(_)) | hcmd!(C::Return { .. }) => true,
+        hcmd!(C::Break(_))
+        | hcmd!(C::Continue(_))
+        | hcmd!(C::Abort(_))
+        | hcmd!(C::Return { .. }) => true,
 
         _ => false,
-    };
-    // println!(" => {}", result);
-    result
+    }
 }
 
 macro_rules! make_block {
@@ -654,6 +687,12 @@ macro_rules! make_block {
 
 fn make_command(loc: Loc, command: H::Command_) -> H::Statement {
     sp(loc, H::Statement_::Command(sp(loc, command)))
+}
+
+fn process_loop_body(context: &mut Context, body: T::Exp) -> H::Block {
+    let mut loop_block = make_block!();
+    statement(context, &mut loop_block, body);
+    loop_block
 }
 
 fn tbool(loc: Loc) -> H::Type {
@@ -732,7 +771,12 @@ fn is_statement(e: &T::Exp) -> bool {
     use T::UnannotatedExp_ as E;
     matches!(
         e.exp.value,
-        E::Return(_) | E::Abort(_) | E::Break | E::Continue | E::Assign(_, _, _) | E::Mutate(_, _)
+        E::Return(_)
+            | E::Abort(_)
+            | E::Give(_, _)
+            | E::Continue(_)
+            | E::Assign(_, _, _)
+            | E::Mutate(_, _)
     )
 }
 
@@ -831,8 +875,8 @@ fn body(
     loc: Loc,
     seq: T::Sequence,
 ) -> (Block, Option<H::Exp>) {
-    if seq.len() == 0 {
-        return (make_block!(), Some(unit_exp(loc)));
+    if seq.is_empty() {
+        (make_block!(), Some(unit_exp(loc)))
     } else {
         let mut block = make_block!();
         let final_exp = tail_block(context, &mut block, expected_type, seq);
@@ -905,18 +949,39 @@ fn tail(
                 None
             }
         }
-        // Whiles and loops Loops are currently moved to statement position
-        e_ @ E::While(_, _) => {
+        // While loops can't yield values, so we treat them as statements with no binders.
+        e_ @ E::While(_, _, _) => {
             statement(context, block, T::exp(in_type.clone(), sp(eloc, e_)));
             Some(trailing_unit_exp(eloc))
         }
-        e_ @ E::Loop {
-            has_break: true, ..
+        E::Loop {
+            name,
+            has_break: true,
+            body,
         } => {
-            statement(context, block, T::exp(in_type.clone(), sp(eloc, e_)));
-            Some(trailing_unit_exp(eloc))
+            let name = translate_var(name);
+            let (binders, bound_exp) = make_binders(context, eloc, out_type.clone());
+            let result = Some(if binders.is_empty() {
+                // need to swap the implicit unit out for a trailing unit in tail position
+                trailing_unit_exp(eloc)
+            } else {
+                bound_exp
+            });
+            context.record_named_block_binders(name, binders);
+            context.record_named_block_type(name, out_type.clone());
+            block.push_back(sp(
+                eloc,
+                S::Loop {
+                    name,
+                    has_break: true,
+                    block: process_loop_body(context, *body),
+                },
+            ));
+            result
         }
         e_ @ E::Loop { .. } => {
+            // A loop wthout a break has no concrete type for its binders, but since we'll never
+            // find a break we won't need binders anyway. We just treat it like a statement.
             statement(context, block, T::exp(in_type.clone(), sp(eloc, e_)));
             None
         }
@@ -927,8 +992,8 @@ fn tail(
         // -----------------------------------------------------------------------------------------
         E::Return(_)
         | E::Abort(_)
-        | E::Break
-        | E::Continue
+        | E::Give(_, _)
+        | E::Continue(_)
         | E::Assign(_, _, _)
         | E::Mutate(_, _) => panic!("ICE statement mishandled"),
 
@@ -1102,16 +1167,29 @@ fn value(
                 None
             }
         }
-        // Whiles and loops Loops are currently moved to statement position
-        e_ @ E::While(_, _) => {
+        // While loops can't yield values, so we treat them as statements with no binders.
+        e_ @ E::While(_, _, _) => {
             statement(context, block, T::exp(in_type.clone(), sp(eloc, e_)));
             Some(unit_exp(eloc))
         }
-        e_ @ E::Loop {
-            has_break: true, ..
+        E::Loop {
+            name,
+            has_break: true,
+            body,
         } => {
-            statement(context, block, T::exp(in_type.clone(), sp(eloc, e_)));
-            Some(unit_exp(eloc))
+            let name = translate_var(name);
+            let (binders, bound_exp) = make_binders(context, eloc, out_type.clone());
+            context.record_named_block_binders(name, binders);
+            context.record_named_block_type(name, out_type.clone());
+            block.push_back(sp(
+                eloc,
+                S::Loop {
+                    name,
+                    has_break: true,
+                    block: process_loop_body(context, *body),
+                },
+            ));
+            Some(bound_exp)
         }
         e_ @ E::Loop { .. } => {
             emit_unreachable(context, eloc);
@@ -1148,14 +1226,14 @@ fn value(
                 None
             }
         }
-        E::Builtin(bt, args) => builtin(context, block, eloc, *bt, args).and_then(|e| make_exp(e)),
+        E::Builtin(bt, args) => builtin(context, block, eloc, *bt, args).and_then(make_exp),
 
         // -----------------------------------------------------------------------------------------
         // nested expressions
         // -----------------------------------------------------------------------------------------
         E::Vector(vec_loc, size, vty, args) => {
             let maybe_values = value_list(context, block, None, *args);
-            let vec_exp = if let Some(values) = maybe_values {
+            if let Some(values) = maybe_values {
                 make_exp(HE::Vector(
                     vec_loc,
                     size,
@@ -1164,8 +1242,7 @@ fn value(
                 ))
             } else {
                 None
-            };
-            vec_exp
+            }
         }
         E::Dereference(ev) => {
             let value = value(context, block, None, *ev);
@@ -1378,8 +1455,8 @@ fn value(
         E::BinopExp(_, _, _, _)
         | E::Return(_)
         | E::Abort(_)
-        | E::Break
-        | E::Continue
+        | E::Give(_, _)
+        | E::Continue(_)
         | E::Assign(_, _, _)
         | E::Mutate(_, _) => panic!("ICE statement mishandled"),
 
@@ -1417,12 +1494,11 @@ fn value_block(
     use T::SequenceItem_ as S;
     let last_exp = seq.pop_back();
     statement_block(context, block, seq, false);
-    let last_exp = match last_exp {
+    match last_exp {
         None => None,
         Some(sp!(_, S::Seq(last))) => value(context, block, expected_type, *last),
         Some(_) => panic!("ICE last sequence item should be an exp"),
-    };
-    last_exp
+    }
 }
 
 fn value_list(
@@ -1485,7 +1561,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
     } = e;
 
     let make_exp = |e_| T::Exp {
-        ty,
+        ty: ty.clone(),
         exp: sp(eloc, e_),
     };
     match e_ {
@@ -1509,7 +1585,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                 ));
             }
         }
-        E::While(test, body) => {
+        E::While(name, test, body) => {
             let mut cond_block = make_block!();
             let cond_exp = value(context, &mut cond_block, Some(&tbool(eloc)), *test);
             let mut body_block = make_block!();
@@ -1519,6 +1595,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                 block.push_back(sp(
                     eloc,
                     S::While {
+                        name: translate_var(name),
                         cond,
                         block: body_block,
                     },
@@ -1527,14 +1604,27 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                 block.append(&mut cond_block);
             }
         }
-        E::Loop { body, has_break } => {
-            let mut loop_block = make_block!();
-            statement(context, &mut loop_block, *body);
+        E::Loop {
+            name,
+            body,
+            has_break,
+        } => {
+            let name = translate_var(name);
+            let out_type = type_(context, ty.clone());
+            let (binders, _bound_exp) = make_binders(context, eloc, out_type.clone());
+            if !binders.is_empty() {
+                println!(
+                    "Emit an error about how this needs to be empty or we're dropping values."
+                );
+            }
+            context.record_named_block_binders(name, binders);
+            context.record_named_block_type(name, out_type);
             block.push_back(sp(
                 eloc,
                 S::Loop {
-                    block: loop_block,
+                    name,
                     has_break,
+                    block: process_loop_body(context, *body),
                 },
             ));
         }
@@ -1556,11 +1646,21 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                 block.push_back(make_command(eloc, C::Abort(rhs_exp)));
             }
         }
-        E::Break => {
-            block.push_back(make_command(eloc, C::Break));
+        E::Give(name, rhs) => {
+            let out_name = translate_var(name);
+            let bind_ty = context.lookup_named_block_type(&out_name);
+            let rhs = value(context, block, bind_ty.as_ref(), *rhs);
+            let binders = context.lookup_named_block_binders(&out_name);
+            if binders.is_empty() {
+                make_ignore_and_pop(block, rhs);
+            } else {
+                bind_value_in_block(context, binders, bind_ty, block, rhs);
+            }
+            block.push_back(make_command(eloc, C::Break(out_name)));
         }
-        E::Continue => {
-            block.push_back(make_command(eloc, C::Continue));
+        E::Continue(name) => {
+            let out_name = translate_var(name);
+            block.push_back(make_command(eloc, C::Continue(out_name)));
         }
 
         // -----------------------------------------------------------------------------------------
@@ -1928,7 +2028,7 @@ fn bind_value_in_block(
     }
     let rhs_exp = maybe_freeze(context, stmts, binders_type, value_exp);
     if let Some(real_exp) = rhs_exp {
-        let loc = *&real_exp.exp.loc;
+        let loc = real_exp.exp.loc;
         stmts.push_back(sp(loc, S::Command(sp(loc, C::Assign(binders, real_exp)))));
         true
     } else {
@@ -1974,10 +2074,7 @@ fn make_binders(context: &mut Context, loc: Loc, ty: H::Type) -> (Vec<H::LValue>
 
 fn make_temp(context: &mut Context, loc: Loc, sp!(_, ty): H::SingleType) -> (H::LValue, H::Exp) {
     let binder = context.new_temp(loc, sp(loc, ty.clone()));
-    let lvalue = sp(
-        loc,
-        H::LValue_::Var(binder.clone(), Box::new(sp(loc, ty.clone()))),
-    );
+    let lvalue = sp(loc, H::LValue_::Var(binder, Box::new(sp(loc, ty.clone()))));
     let uexp = sp(
         loc,
         H::UnannotatedExp_::Move {
@@ -2041,7 +2138,7 @@ fn builtin(
         }
         TB::Freeze(_bt) => {
             let args = value(context, block, None, *targ);
-            args.and_then(|arg| Some(E::Freeze(Box::new(arg))))
+            args.map(|arg| E::Freeze(Box::new(arg)))
         }
         TB::Assert(_) => unreachable!(),
     }
@@ -2217,17 +2314,17 @@ fn make_boolean_binop(
 
 fn simple_bool_binop_arg((block, exp): &(Block, Option<H::Exp>)) -> bool {
     use H::UnannotatedExp_ as HE;
-    if block.len() > 0 {
+    if !block.is_empty() {
         false
     } else if let Some(exp) = exp {
-        match exp.exp.value {
+        matches!(
+            exp.exp.value,
             HE::Value(_)
-            | HE::Constant(_)
-            | HE::Move { .. }
-            | HE::Copy { .. }
-            | HE::UnresolvedError => true,
-            _ => false,
-        }
+                | HE::Constant(_)
+                | HE::Move { .. }
+                | HE::Copy { .. }
+                | HE::UnresolvedError
+        )
     } else {
         false
     }

@@ -622,7 +622,7 @@ pub enum Exp_ {
     // abort e
     Abort(Box<Exp>),
     // break
-    Break,
+    Break(Option<Box<Exp>>),
     // continue
     Continue,
 
@@ -1813,7 +1813,13 @@ impl AstDebug for Exp_ {
                 w.write("abort ");
                 e.ast_debug(w);
             }
-            E::Break => w.write("break"),
+            E::Break(e) => {
+                w.write("break");
+                if let Some(v) = e {
+                    w.write(" ");
+                    v.ast_debug(w);
+                }
+            }
             E::Continue => w.write("continue"),
             E::Dereference(e) => {
                 w.write("*");

@@ -53,6 +53,8 @@ struct Context<'env> {
     local_scopes: Vec<BTreeMap<Symbol, u16>>,
     local_count: BTreeMap<Symbol, u16>,
     used_locals: BTreeSet<N::Var_>,
+    loop_names: Vec<N::Var>,
+    loop_id: u16,
     /// Type parameters used in a function (they have to be cleared after processing each function).
     used_fun_tparams: BTreeSet<TParamID>,
     /// Indicates if the compiler is currently translating a function (set to true before starting
@@ -127,6 +129,8 @@ impl<'env> Context<'env> {
             unscoped_constants: BTreeMap::new(),
             local_scopes: vec![],
             local_count: BTreeMap::new(),
+            loop_names: vec![],
+            loop_id: 0,
             used_locals: BTreeSet::new(),
             used_fun_tparams: BTreeSet::new(),
             translating_fun: false,
@@ -378,6 +382,29 @@ impl<'env> Context<'env> {
                 Some(sp(vloc, nvar_))
             }
         }
+    }
+
+    fn enter_loop(&mut self, loc: Loc) -> N::Var {
+        let id = self.loop_id;
+        self.loop_id = id + 1;
+        let loop_local: N::Var = sp(
+            loc,
+            N::Var_ {
+                name: "loop".into(),
+                id,
+                color: 0,
+            },
+        );
+        self.loop_names.push(loop_local);
+        loop_local
+    }
+
+    fn current_loop(&self) -> Option<N::Var> {
+        self.loop_names.last().copied()
+    }
+
+    fn exit_loop(&mut self) {
+        self.loop_names.pop();
     }
 }
 
@@ -1068,8 +1095,19 @@ fn exp_(context: &mut Context, e: E::Exp) -> N::Exp {
         EE::IfElse(eb, et, ef) => {
             NE::IfElse(exp(context, *eb), exp(context, *et), exp(context, *ef))
         }
-        EE::While(eb, el) => NE::While(exp(context, *eb), exp(context, *el)),
-        EE::Loop(el) => NE::Loop(exp(context, *el)),
+        EE::While(eb, el) => {
+            let cond = exp(context, *eb);
+            let loop_name = context.enter_loop(eloc);
+            let body = exp(context, *el);
+            context.exit_loop();
+            NE::While(loop_name, cond, body)
+        }
+        EE::Loop(el) => {
+            let loop_name = context.enter_loop(eloc);
+            let body = exp(context, *el);
+            context.exit_loop();
+            NE::Loop(loop_name, body)
+        }
         EE::Block(seq) => NE::Block(sequence(context, seq)),
 
         EE::Assign(a, e) => {
@@ -1102,8 +1140,30 @@ fn exp_(context: &mut Context, e: E::Exp) -> N::Exp {
 
         EE::Return(es) => NE::Return(exp(context, *es)),
         EE::Abort(es) => NE::Abort(exp(context, *es)),
-        EE::Break => NE::Break,
-        EE::Continue => NE::Continue,
+        EE::Break(rhs) => {
+            let out_rhs = exp(context, *rhs);
+            if let Some(loop_name) = context.current_loop() {
+                NE::Give(loop_name, out_rhs)
+            } else {
+                let msg = "Invalid usage of 'break'. 'break' can only be used inside a loop body";
+                context
+                    .env
+                    .add_diag(diag!(TypeSafety::InvalidLoopControl, (eloc, msg)));
+                NE::UnresolvedError
+            }
+        }
+        EE::Continue => {
+            if let Some(loop_name) = context.current_loop() {
+                NE::Continue(loop_name)
+            } else {
+                let msg =
+                    "Invalid usage of 'continue'. 'continue' can only be used inside a loop body";
+                context
+                    .env
+                    .add_diag(diag!(TypeSafety::InvalidLoopControl, (eloc, msg)));
+                NE::UnresolvedError
+            }
+        }
 
         EE::Dereference(e) => NE::Dereference(exp(context, *e)),
         EE::UnaryExp(uop, e) => NE::UnaryExp(uop, exp(context, *e)),
@@ -1582,8 +1642,7 @@ fn remove_unused_bindings_exp(
         | N::Exp_::Copy(_)
         | N::Exp_::Use(_)
         | N::Exp_::Constant(_, _)
-        | N::Exp_::Break
-        | N::Exp_::Continue
+        | N::Exp_::Continue(_)
         | N::Exp_::Unit { .. }
         | N::Exp_::Spec(_, _)
         | N::Exp_::UnresolvedError => (),
@@ -1593,14 +1652,15 @@ fn remove_unused_bindings_exp(
         | N::Exp_::UnaryExp(_, e)
         | N::Exp_::Cast(e, _)
         | N::Exp_::Assign(_, e)
-        | N::Exp_::Loop(e)
+        | N::Exp_::Loop(_, e)
+        | N::Exp_::Give(_, e)
         | N::Exp_::Annotate(e, _) => remove_unused_bindings_exp(context, used, e),
         N::Exp_::IfElse(econd, et, ef) => {
             remove_unused_bindings_exp(context, used, econd);
             remove_unused_bindings_exp(context, used, et);
             remove_unused_bindings_exp(context, used, ef);
         }
-        N::Exp_::While(econd, ebody) => {
+        N::Exp_::While(_, econd, ebody) => {
             remove_unused_bindings_exp(context, used, econd);
             remove_unused_bindings_exp(context, used, ebody)
         }

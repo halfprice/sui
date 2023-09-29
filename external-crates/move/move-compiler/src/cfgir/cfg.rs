@@ -289,7 +289,7 @@ fn dead_code_error(diags: &mut Diagnostics, block: &BasicBlock) {
 }
 
 pub fn build_dead_code_error(block: &BasicBlock) -> Option<Diagnostic> {
-    if block.len() < 1 {
+    if block.is_empty() {
         None
     } else {
         let first_command = block.front().unwrap();
@@ -314,7 +314,7 @@ fn unreachable_loc(sp!(_, cmd_): &Command) -> Option<Loc> {
         | C::IgnoreAndPop { exp: e, .. }
         | C::JumpIf { cond: e, .. } => unreachable_loc_exp(e),
         C::Jump { .. } => None,
-        C::Break | C::Continue => panic!("ICE break/continue not translated to jumps"),
+        C::Break(_) | C::Continue(_) => panic!("ICE break/continue not translated to jumps"),
     }
 }
 
@@ -452,7 +452,7 @@ fn maybe_unmark_infinite_loop_starts(
         | C::Assign(_, _)
         | C::Mutate(_, _)
         | C::IgnoreAndPop { .. } => (),
-        C::Break | C::Continue => panic!("ICE break/continue not translated to jumps"),
+        C::Break(_) | C::Continue(_) => panic!("ICE break/continue not translated to jumps"),
     }
 }
 

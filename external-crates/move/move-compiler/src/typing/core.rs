@@ -65,14 +65,6 @@ pub struct ProgramInfo<const AFTER_TYPING: bool> {
 pub type NamingProgramInfo = ProgramInfo<false>;
 pub type TypingProgramInfo = ProgramInfo<true>;
 
-pub struct LoopInfo(LoopInfo_);
-
-enum LoopInfo_ {
-    NotInLoop,
-    BreakTypeUnknown,
-    BreakType(Box<Type>),
-}
-
 pub struct Context<'env> {
     pub modules: NamingProgramInfo,
     pub env: &'env mut CompilationEnv,
@@ -86,7 +78,7 @@ pub struct Context<'env> {
     pub subst: Subst,
     pub constraints: Constraints,
 
-    loop_info: LoopInfo,
+    named_block_map: BTreeMap<Var, Type>,
 
     /// collects all called functions in the current module
     pub called_fns: BTreeSet<Symbol>,
@@ -215,7 +207,7 @@ impl<'env> Context<'env> {
             return_type: None,
             constraints: vec![],
             locals: UniqueMap::new(),
-            loop_info: LoopInfo(LoopInfo_::NotInLoop),
+            named_block_map: BTreeMap::new(),
             modules,
             env,
             called_fns: BTreeSet::new(),
@@ -224,10 +216,7 @@ impl<'env> Context<'env> {
     }
 
     pub fn reset_for_module_item(&mut self) {
-        assert!(
-            matches!(&self.loop_info, LoopInfo(LoopInfo_::NotInLoop)),
-            "ICE loop_info should be reset after the loop"
-        );
+        self.named_block_map = BTreeMap::new();
         self.return_type = None;
         self.locals = UniqueMap::new();
         self.subst = Subst::empty();
@@ -378,40 +367,18 @@ impl<'env> Context<'env> {
         constants.get(n).expect("ICE should have failed in naming")
     }
 
-    pub fn in_loop(&self) -> bool {
-        match &self.loop_info.0 {
-            LoopInfo_::NotInLoop => false,
-            LoopInfo_::BreakTypeUnknown | LoopInfo_::BreakType(_) => true,
+    pub fn named_block_type(&mut self, name: Var) -> Type {
+        if let Some(ty) = self.named_block_map.get(&name) {
+            ty.clone()
+        } else {
+            let new_type = make_tvar(self, name.loc);
+            self.named_block_map.insert(name, new_type.clone());
+            new_type
         }
     }
 
-    pub fn get_break_type(&self) -> Option<&Type> {
-        match &self.loop_info.0 {
-            LoopInfo_::NotInLoop | LoopInfo_::BreakTypeUnknown => None,
-            LoopInfo_::BreakType(t) => Some(t),
-        }
-    }
-
-    pub fn set_break_type(&mut self, t: Type) {
-        match &self.loop_info.0 {
-            LoopInfo_::NotInLoop => (),
-            LoopInfo_::BreakTypeUnknown | LoopInfo_::BreakType(_) => {
-                self.loop_info.0 = LoopInfo_::BreakType(Box::new(t))
-            }
-        }
-    }
-
-    pub fn enter_loop(&mut self) -> LoopInfo {
-        std::mem::replace(&mut self.loop_info, LoopInfo(LoopInfo_::BreakTypeUnknown))
-    }
-
-    // Reset loop info and return the loop's break type, if it has one
-    pub fn exit_loop(&mut self, old_info: LoopInfo) -> Option<Type> {
-        match std::mem::replace(&mut self.loop_info, old_info).0 {
-            LoopInfo_::NotInLoop => panic!("ICE exit_loop called while not in a loop"),
-            LoopInfo_::BreakTypeUnknown => None,
-            LoopInfo_::BreakType(t) => Some(*t),
-        }
+    pub fn named_block_type_opt(&self, name: Var) -> Option<Type> {
+        self.named_block_map.get(&name).cloned()
     }
 }
 

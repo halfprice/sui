@@ -431,7 +431,6 @@ fn exp(context: &mut Context, sp!(_loc, e_): &E::Exp) {
 
         E::Unit { .. }
         | E::UnresolvedError
-        | E::Break
         | E::Continue
         | E::Spec(_, _)
         | E::Value(_)
@@ -478,6 +477,7 @@ fn exp(context: &mut Context, sp!(_loc, e_): &E::Exp) {
         }
 
         E::Loop(e)
+        | E::Break(e)
         | E::Return(e)
         | E::Abort(e)
         | E::Dereference(e)
