@@ -1558,7 +1558,7 @@ fn loop_body(
             subtype(
                 context,
                 break_ty.loc,
-                || "Invalid 'break' in 'while'",
+                || "Cannot use 'break' with a value in 'while'",
                 break_ty.clone(),
                 sp(lloc, Type_::Unit),
             );

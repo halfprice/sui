@@ -1,5 +1,5 @@
 module 0x42::M {
     fun t(cond: bool) {
-        loop { break 0 };
+        let _x = loop { break 0 };
     }
 }

@@ -1,0 +1,9 @@
+error[E01002]: unexpected token
+   ┌─ tests/move_check/typing/break_with_value_invalid.move:41:16
+   │
+41 │             if cond {
+   │                ^^^^
+   │                │
+   │                Unexpected 'cond'
+   │                Expected '('
+

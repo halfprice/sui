@@ -167,7 +167,7 @@ impl<'env> Context<'env> {
     }
 
     pub fn record_named_block_type(&mut self, block_name: H::Var, ty: H::Type) {
-        self.named_block_types.add(block_name, ty);
+        let _ = self.named_block_types.add(block_name, ty).expect("ICE reused block name");
     }
 
     pub fn lookup_named_block_binders(&mut self, block_name: &H::Var) -> Vec<H::LValue> {
@@ -1586,6 +1586,10 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
             }
         }
         E::While(name, test, body) => {
+            let name = translate_var(name);
+            // While loops can still use break and continue so we build them dummy binders. 
+            context.record_named_block_binders(name, vec![]);
+            context.record_named_block_type(name, tunit(eloc));
             let mut cond_block = make_block!();
             let cond_exp = value(context, &mut cond_block, Some(&tbool(eloc)), *test);
             let mut body_block = make_block!();
@@ -1595,7 +1599,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                 block.push_back(sp(
                     eloc,
                     S::While {
-                        name: translate_var(name),
+                        name,
                         cond,
                         block: body_block,
                     },
@@ -1611,12 +1615,8 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
         } => {
             let name = translate_var(name);
             let out_type = type_(context, ty.clone());
-            let (binders, _bound_exp) = make_binders(context, eloc, out_type.clone());
-            if !binders.is_empty() {
-                println!(
-                    "Emit an error about how this needs to be empty or we're dropping values."
-                );
-            }
+            let (binders, bound_exp) = make_binders(context, eloc, out_type.clone());
+            let unused_binders = !binders.is_empty() && has_break;
             context.record_named_block_binders(name, binders);
             context.record_named_block_type(name, out_type);
             block.push_back(sp(
@@ -1627,6 +1627,13 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                     block: process_loop_body(context, *body),
                 },
             ));
+            if unused_binders {
+                let msg = format!("This loop's breaks value(s) are unused");
+                context
+                    .env
+                    .add_diag(diag!(UnusedItem::LoopBreakValue, (eloc, msg)));
+                make_ignore_and_pop(block, Some(bound_exp));
+            }
         }
         E::Block(seq) => statement_block(context, block, seq, true),
         E::Return(rhs) => {
