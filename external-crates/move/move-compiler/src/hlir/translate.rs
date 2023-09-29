@@ -160,15 +160,13 @@ impl<'env> Context<'env> {
     }
 
     pub fn record_named_block_binders(&mut self, block_name: H::Var, binders: Vec<H::LValue>) {
-        let _ = self
-            .named_block_binders
+        self.named_block_binders
             .add(block_name, binders)
             .expect("ICE reused block name");
     }
 
     pub fn record_named_block_type(&mut self, block_name: H::Var, ty: H::Type) {
-        let _ = self
-            .named_block_types
+        self.named_block_types
             .add(block_name, ty)
             .expect("ICE reused block name");
     }
@@ -1631,7 +1629,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
                 },
             ));
             if unused_binders {
-                let msg = format!("This loop's breaks value(s) are unused");
+                let msg = "This loop's breaks value(s) are unused";
                 context
                     .env
                     .add_diag(diag!(UnusedItem::LoopBreakValue, (eloc, msg)));

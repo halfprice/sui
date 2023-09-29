@@ -80,8 +80,7 @@ impl<'env> Context<'env> {
                 loop_end: G::LoopEnd::Target(end_label),
             },
         );
-        let _ = self
-            .named_blocks
+        self.named_blocks
             .add(name, (start_label, end_label))
             .expect("ICE reused block name");
         (start_label, end_label)
