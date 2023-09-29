@@ -167,7 +167,10 @@ impl<'env> Context<'env> {
     }
 
     pub fn record_named_block_type(&mut self, block_name: H::Var, ty: H::Type) {
-        let _ = self.named_block_types.add(block_name, ty).expect("ICE reused block name");
+        let _ = self
+            .named_block_types
+            .add(block_name, ty)
+            .expect("ICE reused block name");
     }
 
     pub fn lookup_named_block_binders(&mut self, block_name: &H::Var) -> Vec<H::LValue> {
@@ -1587,7 +1590,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
         }
         E::While(name, test, body) => {
             let name = translate_var(name);
-            // While loops can still use break and continue so we build them dummy binders. 
+            // While loops can still use break and continue so we build them dummy binders.
             context.record_named_block_binders(name, vec![]);
             context.record_named_block_type(name, tunit(eloc));
             let mut cond_block = make_block!();
