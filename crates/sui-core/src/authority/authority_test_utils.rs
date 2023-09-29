@@ -346,6 +346,30 @@ pub async fn enqueue_all_and_execute_all(
     Ok(output)
 }
 
+pub fn enqueue_all_and_execute_all_and_return(
+    authority: &AuthorityState,
+    certificates: Vec<VerifiedCertificate>,
+) {
+    authority
+        .enqueue_certificates_for_execution(
+            certificates.clone(),
+            &authority.epoch_store_for_testing(),
+        )
+        .unwrap();
+}
+
+pub async fn get_effects_of_executed_certs(
+    authority: &AuthorityState,
+    certificates: Vec<VerifiedCertificate>,
+) -> Result<Vec<TransactionEffects>, SuiError> {
+    let mut output = Vec::new();
+    for cert in certificates {
+        let effects = authority.notify_read_effects(&cert).await?;
+        output.push(effects);
+    }
+    Ok(output)
+}
+
 pub async fn execute_sequenced_certificate_to_effects(
     authority: &AuthorityState,
     certificate: VerifiedCertificate,

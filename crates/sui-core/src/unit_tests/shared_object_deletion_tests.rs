@@ -14,6 +14,9 @@ use sui_types::{
 };
 
 use crate::authority::authority_test_utils::execute_sequenced_certificate_to_effects;
+use crate::authority::authority_tests::{
+    enqueue_all_and_execute_all_and_return, get_effects_of_executed_certs,
+};
 use crate::{
     authority::{
         authority_tests::{
@@ -451,6 +454,20 @@ impl TestRunner {
         enqueue_all_and_execute_all(&self.authority_state, certificates).await
     }
 
+    pub fn enqueue_all_and_execute_all_and_return(
+        &mut self,
+        certificates: Vec<VerifiedCertificate>,
+    ) {
+        enqueue_all_and_execute_all_and_return(&self.authority_state, certificates)
+    }
+
+    pub async fn get_effects_of_executed_certs(
+        &mut self,
+        certificates: Vec<VerifiedCertificate>,
+    ) -> Result<Vec<TransactionEffects>, SuiError> {
+        get_effects_of_executed_certs(&self.authority_state, certificates).await
+    }
+
     pub async fn execute_sequenced_certificate_to_effects(
         &mut self,
         certificate: VerifiedCertificate,
@@ -652,6 +669,117 @@ async fn test_mutate_after_delete_enqueued() {
     assert_eq!(effects.mutated().len(), 1);
 
     assert!(effects.dependencies().contains(digest));
+}
+
+#[tokio::test]
+async fn test_mutate_after_delete_enqueued_bac() {
+    let mut user_1 = TestRunner::new("shared_object_deletion").await;
+    let effects = user_1.create_shared_object().await;
+
+    assert_eq!(effects.created().len(), 1);
+
+    let shared_obj = effects.created()[0].0;
+    let shared_obj_id = shared_obj.0;
+    let initial_shared_version = shared_obj.1;
+
+    let mutate_obj_tx = user_1
+        .mutate_shared_obj_tx(shared_obj_id, initial_shared_version)
+        .await;
+
+    let mutate_obj_tx_2 = user_1
+        .mutate_shared_obj_tx(shared_obj_id, initial_shared_version)
+        .await;
+
+    let delete_obj_tx = user_1
+        .delete_shared_obj_tx(shared_obj_id, initial_shared_version)
+        .await;
+
+    let delete_cert = user_1
+        .certify_shared_obj_transaction(delete_obj_tx)
+        .await
+        .unwrap();
+
+    let mutate_cert = user_1
+        .certify_shared_obj_transaction(mutate_obj_tx)
+        .await
+        .unwrap();
+
+    let mutate_cert_2 = user_1
+        .certify_shared_obj_transaction(mutate_obj_tx_2)
+        .await
+        .unwrap();
+
+    user_1.enqueue_all_and_execute_all_and_return(vec![mutate_cert.clone()]);
+
+    user_1.enqueue_all_and_execute_all_and_return(vec![delete_cert.clone(), mutate_cert_2.clone()]);
+
+    let res = user_1
+        .get_effects_of_executed_certs(vec![delete_cert, mutate_cert, mutate_cert_2])
+        .await
+        .unwrap();
+
+    let effects_m1 = res.get(1).unwrap();
+    let effects_m2 = res.get(2).unwrap();
+    let gas_coin_v_m1 = effects_m1.mutated()[0].0 .1;
+    let gas_coin_v_m2 = effects_m2.mutated()[0].0 .1;
+    assert_eq!(gas_coin_v_m1, 5.into()); // gas coin has version 5
+    assert_eq!(gas_coin_v_m2, 6.into()); // gas coin has version 6
+}
+
+#[tokio::test]
+async fn test_mutat_after_delete_enqueued_acb() {
+    let mut user_1 = TestRunner::new("shared_object_deletion").await;
+    let effects = user_1.create_shared_object().await;
+
+    assert_eq!(effects.created().len(), 1);
+
+    let shared_obj = effects.created()[0].0;
+    let shared_obj_id = shared_obj.0;
+    let initial_shared_version = shared_obj.1;
+
+    let mutate_obj_tx = user_1
+        .mutate_shared_obj_tx(shared_obj_id, initial_shared_version)
+        .await;
+
+    let mutate_obj_tx_2 = user_1
+        .mutate_shared_obj_tx(shared_obj_id, initial_shared_version)
+        .await;
+
+    let delete_obj_tx = user_1
+        .delete_shared_obj_tx(shared_obj_id, initial_shared_version)
+        .await;
+
+    let delete_cert = user_1
+        .certify_shared_obj_transaction(delete_obj_tx)
+        .await
+        .unwrap();
+
+    let mutate_cert = user_1
+        .certify_shared_obj_transaction(mutate_obj_tx)
+        .await
+        .unwrap();
+
+    let mutate_cert_2 = user_1
+        .certify_shared_obj_transaction(mutate_obj_tx_2)
+        .await
+        .unwrap();
+
+    user_1.enqueue_all_and_execute_all_and_return(vec![delete_cert.clone()]);
+
+    user_1.enqueue_all_and_execute_all_and_return(vec![mutate_cert_2.clone()]);
+    user_1.enqueue_all_and_execute_all_and_return(vec![mutate_cert.clone()]);
+
+    let res = user_1
+        .get_effects_of_executed_certs(vec![delete_cert, mutate_cert, mutate_cert_2])
+        .await
+        .unwrap();
+
+    let effects_m1 = res.get(1).unwrap();
+    let effects_m2 = res.get(2).unwrap();
+    let gas_coin_v_m1 = effects_m1.mutated()[0].0 .1;
+    let gas_coin_v_m2 = effects_m2.mutated()[0].0 .1;
+    assert_eq!(gas_coin_v_m1, 5.into()); // gas coin has version 5
+    assert_eq!(gas_coin_v_m2, 6.into()); // gas coin has version 6
 }
 
 #[tokio::test]
