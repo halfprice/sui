@@ -93,7 +93,7 @@ impl AuthenticatorTrait for MultiSig {
         &self,
         value: &IntentMessage<T>,
         author: SuiAddress,
-        _aux_verify_data: &VerifyParams,
+        aux_verify_data: &VerifyParams,
     ) -> Result<(), SuiError>
     where
         T: Serialize,
@@ -164,6 +164,9 @@ impl AuthenticatorTrait for MultiSig {
                             error: "Fail to verify single sig".to_string(),
                         })?,
                     )
+                },
+                CompressedSignature::ZkLogin(s) => {
+                    s.verify_authenticator(value, author, epoch, aux_verify_data)
                 }
             };
             if res.is_ok() {

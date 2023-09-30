@@ -42,6 +42,7 @@ use crate::base_types::{AuthorityName, SuiAddress};
 use crate::committee::{Committee, EpochId, StakeUnit};
 use crate::error::{SuiError, SuiResult};
 use crate::sui_serde::{Readable, SuiBitmap};
+use crate::zk_login_authenticator::ZkLoginAuthenticator;
 pub use enum_dispatch::enum_dispatch;
 use fastcrypto::encoding::{Base64, Encoding, Hex};
 use fastcrypto::error::FastCryptoError;
@@ -239,6 +240,7 @@ pub enum PublicKey {
     Ed25519(Ed25519PublicKeyAsBytes),
     Secp256k1(Secp256k1PublicKeyAsBytes),
     Secp256r1(Secp256r1PublicKeyAsBytes),
+    ZkLogin(ZkLoginAuthenticator)
 }
 
 impl AsRef<[u8]> for PublicKey {
@@ -683,6 +685,13 @@ impl Signature {
                     }
                 })?)
                     .into(),
+            )),
+            SignatureScheme::ZkLoginAuthenticator => Ok(CompressedSignature::ZkLogin(
+                ZkLoginAuthenticator::from_bytes(bytes).map_err(|_| {
+                    SuiError::InvalidSignature {
+                        error: "Cannot parse zklogin sig".to_string(),
+                    }
+                })?,
             )),
             _ => Err(SuiError::UnsupportedFeatureError {
                 error: "Unsupported signature scheme in MultiSig".to_string(),
@@ -1678,6 +1687,7 @@ pub enum CompressedSignature {
     Ed25519(Ed25519SignatureAsBytes),
     Secp256k1(Secp256k1SignatureAsBytes),
     Secp256r1(Secp256r1SignatureAsBytes),
+    ZkLogin(ZkLoginAuthenticator)
 }
 
 impl AsRef<[u8]> for CompressedSignature {
@@ -1686,6 +1696,7 @@ impl AsRef<[u8]> for CompressedSignature {
             CompressedSignature::Ed25519(sig) => &sig.0,
             CompressedSignature::Secp256k1(sig) => &sig.0,
             CompressedSignature::Secp256r1(sig) => &sig.0,
+            CompressedSignature::ZkLogin(sig) => &sig.as_ref(),
         }
     }
 }
