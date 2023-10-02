@@ -11,7 +11,7 @@ Error: Script execution failed with VMError: {
 
 task 2 'run'. lines 17-23:
 warning[W00001]: DEPRECATED. will be removed
-   ┌─ /var/folders/cs/nnvzvy2j4v533r7tpprt7gt00000gn/T/.tmpaean3c:21:9
+   ┌─ /var/folders/cs/nnvzvy2j4v533r7tpprt7gt00000gn/T/.tmp4QESgD:21:9
    │
 21 │         assert(true, 1 / 0);
    │         ^^^^^^
