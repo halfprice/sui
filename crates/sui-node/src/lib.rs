@@ -1025,13 +1025,13 @@ impl SuiNode {
         state_sync_handle: state_sync::Handle,
         accumulator: Arc<StateAccumulator>,
         connection_monitor_status: Arc<ConnectionMonitorStatus>,
-        _registry_service: &RegistryService,
+        registry_service: &RegistryService,
         sui_node_metrics: Arc<SuiNodeMetrics>,
     ) -> Result<ValidatorComponents> {
         let consensus_config = config
             .consensus_config()
             .ok_or_else(|| anyhow!("Validator is missing consensus config"))?;
-        let registry_service = RegistryService::new(Registry::new());
+        // let registry_service = RegistryService::new(Registry::new());
 
         let (consensus_adapter, consensus_manager) = match consensus_config.protocol {
             ConsensusProtocol::Narwhal => {
